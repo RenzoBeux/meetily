@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useReducer, startTransition, useEffect, useState, memo } from "react";
+import { useCallback, useRef, useReducer, startTransition, useEffect, useState, useMemo, memo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { useTranscriptStreaming } from "@/hooks/useTranscriptStreaming";
@@ -10,6 +10,7 @@ import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
 import { TranscriptSegmentData } from "@/types";
 import { formatSpeaker } from "@/lib/speakerLabel";
+import { SpeakerEditPopover } from "./MeetingDetails/SpeakerEditPopover";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -28,6 +29,11 @@ export interface VirtualizedTranscriptViewProps {
     showConfidence?: boolean;
     /** Completely disable auto-scroll behavior (for meeting details page) */
     disableAutoScroll?: boolean;
+
+    /** When provided, speaker pills become clickable to reassign/rename */
+    meetingId?: string;
+    /** Called after a successful speaker edit so the parent can refetch */
+    onSpeakerChanged?: () => Promise<void> | void;
 
     // Pagination props (infinite scroll)
     hasMore?: boolean;
@@ -73,6 +79,9 @@ const TranscriptSegment = memo(function TranscriptSegment({
     speaker,
     isStreaming,
     showConfidence,
+    meetingId,
+    knownSpeakers,
+    onSpeakerChanged,
 }: {
     id: string;
     timestamp: number;
@@ -81,9 +90,22 @@ const TranscriptSegment = memo(function TranscriptSegment({
     speaker?: string;
     isStreaming: boolean;
     showConfidence: boolean;
+    meetingId?: string;
+    knownSpeakers: string[];
+    onSpeakerChanged?: () => Promise<void> | void;
 }) {
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
     const speakerLabel = formatSpeaker(speaker);
+    const canEditSpeaker = !!meetingId && !!onSpeakerChanged;
+
+    const speakerPill = speakerLabel && (
+        <span
+            className={`text-xs px-1.5 py-0.5 rounded mt-1 flex-shrink-0 ${speakerLabel.className} ${canEditSpeaker ? 'cursor-pointer hover:ring-1 hover:ring-current' : ''}`}
+            title={canEditSpeaker ? 'Click to reassign or rename' : undefined}
+        >
+            {speakerLabel.label}
+        </span>
+    );
 
     return (
         <div id={`segment-${id}`} className="mb-3">
@@ -100,11 +122,17 @@ const TranscriptSegment = memo(function TranscriptSegment({
                         )}
                     </TooltipContent>
                 </Tooltip>
-                {speakerLabel && (
-                    <span className={`text-xs px-1.5 py-0.5 rounded mt-1 flex-shrink-0 ${speakerLabel.className}`}>
-                        {speakerLabel.label}
-                    </span>
-                )}
+                {speakerPill && (canEditSpeaker ? (
+                    <SpeakerEditPopover
+                        transcriptId={id}
+                        meetingId={meetingId!}
+                        currentSpeaker={speaker}
+                        knownSpeakers={knownSpeakers}
+                        onChanged={onSpeakerChanged!}
+                    >
+                        {speakerPill}
+                    </SpeakerEditPopover>
+                ) : speakerPill)}
                 <div className="flex-1">
                     {isStreaming ? (
                         <div className="bg-gray-100 border border-gray-200 rounded-lg px-3 py-2">
@@ -128,12 +156,23 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     enableStreaming = false,
     showConfidence = true,
     disableAutoScroll = false,
+    meetingId,
+    onSpeakerChanged,
     hasMore = false,
     isLoadingMore = false,
     totalCount = 0,
     loadedCount = 0,
     onLoadMore,
 }) => {
+    // Distinct speakers in this meeting, used to populate the "reassign to"
+    // chip list in the edit popover.
+    const knownSpeakers = useMemo(() => {
+        const seen = new Set<string>();
+        for (const s of segments) {
+            if (s.speaker) seen.add(s.speaker);
+        }
+        return Array.from(seen);
+    }, [segments]);
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
     // Ref for infinite scroll trigger element
@@ -306,6 +345,9 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         speaker={segment.speaker}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        meetingId={meetingId}
+                                        knownSpeakers={knownSpeakers}
+                                        onSpeakerChanged={onSpeakerChanged}
                                     />
                                 </div>
                             );
@@ -363,6 +405,9 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         speaker={segment.speaker}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        meetingId={meetingId}
+                                        knownSpeakers={knownSpeakers}
+                                        onSpeakerChanged={onSpeakerChanged}
                                     />
                                 </motion.div>
                             );

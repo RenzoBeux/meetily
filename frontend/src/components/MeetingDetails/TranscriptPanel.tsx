@@ -66,6 +66,7 @@ export function TranscriptPanel({
       endTime: t.audio_end_time,
       text: t.text,
       confidence: t.confidence,
+      speaker: t.speaker,
     }));
   }, [transcripts, usePagination, segments]);
 
@@ -96,6 +97,8 @@ export function TranscriptPanel({
           enableStreaming={false}
           showConfidence={true}
           disableAutoScroll={disableAutoScroll}
+          meetingId={meetingId}
+          onSpeakerChanged={onRefetchTranscripts}
           hasMore={hasMore}
           isLoadingMore={isLoadingMore}
           totalCount={totalCount}

@@ -1010,6 +1010,231 @@ pub async fn api_save_transcript<R: Runtime>(
     }
 }
 
+#[derive(Debug, Serialize)]
+struct DiarizeRequestTranscript {
+    id: String,
+    text: String,
+    timestamp: String,
+    audio_start_time: Option<f64>,
+    audio_end_time: Option<f64>,
+    duration: Option<f64>,
+    speaker: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DiarizeRequestBody {
+    audio_file_path: String,
+    transcripts: Vec<DiarizeRequestTranscript>,
+    hf_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_speakers: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_speakers: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_speakers: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DiarizeResponseBody {
+    speaker_map: HashMap<String, String>,
+    total_speakers: usize,
+    diarize_segment_count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DiarizeMeetingResult {
+    pub updated: u64,
+    pub total_speakers: usize,
+    pub diarize_segment_count: usize,
+}
+
+/// Run speaker diarization on a meeting's saved audio via the FastAPI backend
+/// and apply the resulting speaker tags to the local SQLite. Replaces existing
+/// "mic"/"system" tags with diarization-assigned IDs (e.g. "speaker_1").
+#[tauri::command]
+pub async fn api_diarize_meeting<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    hf_token: Option<String>,
+    num_speakers: Option<u32>,
+    min_speakers: Option<u32>,
+    max_speakers: Option<u32>,
+) -> Result<DiarizeMeetingResult, String> {
+    log_info!(
+        "api_diarize_meeting called for meeting_id: {} (hint: num={:?}, min={:?}, max={:?})",
+        meeting_id, num_speakers, min_speakers, max_speakers
+    );
+    let pool = state.db_manager.pool();
+
+    // 1. Resolve the meeting's audio file via folder_path
+    let meeting: Option<MeetingModel> = sqlx::query_as(
+        "SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?",
+    )
+    .bind(&meeting_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("Database error: {}", e))?;
+
+    let meeting = meeting.ok_or_else(|| format!("Meeting {} not found", meeting_id))?;
+    let folder_path = meeting.folder_path.ok_or_else(|| {
+        format!(
+            "Meeting {} has no recording folder. Diarization needs the saved audio file.",
+            meeting_id
+        )
+    })?;
+
+    let audio_path = std::path::Path::new(&folder_path).join("audio.mp4");
+    if !audio_path.exists() {
+        return Err(format!(
+            "Audio file not found at {}. Was auto-save enabled during the recording?",
+            audio_path.display()
+        ));
+    }
+
+    // 2. Load all transcripts for this meeting
+    let (transcripts, _total) = crate::database::repositories::meeting::MeetingsRepository
+        ::get_meeting_transcripts_paginated(pool, &meeting_id, i64::MAX, 0)
+        .await
+        .map_err(|e| format!("Failed to load transcripts: {}", e))?;
+
+    if transcripts.is_empty() {
+        return Err("Meeting has no transcripts to diarize".to_string());
+    }
+
+    let request_items: Vec<DiarizeRequestTranscript> = transcripts
+        .iter()
+        .map(|t| DiarizeRequestTranscript {
+            id: t.id.clone(),
+            text: t.transcript.clone(),
+            timestamp: t.timestamp.clone(),
+            audio_start_time: t.audio_start_time,
+            audio_end_time: t.audio_end_time,
+            duration: t.duration,
+            speaker: t.speaker.clone(),
+        })
+        .collect();
+
+    // 3. POST to backend. Long timeout — diarization on a 30-min meeting can
+    // easily take a few minutes on CPU.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(900))
+        .build()
+        .map_err(|e| format!("HTTP client init failed: {}", e))?;
+
+    let body = DiarizeRequestBody {
+        audio_file_path: audio_path.to_string_lossy().into_owned(),
+        transcripts: request_items,
+        hf_token,
+        num_speakers,
+        min_speakers,
+        max_speakers,
+    };
+
+    let response = client
+        .post(format!("{}/diarize-meeting", APP_SERVER_URL))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            format!(
+                "Could not reach backend for diarization: {}. Is the FastAPI backend running on {}?",
+                e, APP_SERVER_URL
+            )
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = response.text().await.unwrap_or_default();
+        return Err(format!("Diarization backend returned {}: {}", status, detail));
+    }
+
+    let result: DiarizeResponseBody = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse diarization response: {}", e))?;
+
+    log_info!(
+        "Diarization returned {} speakers across {} segments; applying to {} transcripts",
+        result.total_speakers,
+        result.diarize_segment_count,
+        result.speaker_map.len()
+    );
+
+    // 4. Apply speaker updates to local SQLite (the source of truth for the UI)
+    let updated = TranscriptsRepository::update_speakers(pool, &result.speaker_map)
+        .await
+        .map_err(|e| format!("Failed to apply speaker updates locally: {}", e))?;
+
+    Ok(DiarizeMeetingResult {
+        updated,
+        total_speakers: result.total_speakers,
+        diarize_segment_count: result.diarize_segment_count,
+    })
+}
+
+/// Reassign a single transcript segment to a different speaker.
+#[tauri::command]
+pub async fn api_update_transcript_speaker<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    transcript_id: String,
+    speaker: String,
+) -> Result<(), String> {
+    log_info!(
+        "api_update_transcript_speaker: transcript_id={}, speaker={}",
+        transcript_id,
+        speaker
+    );
+    let pool = state.db_manager.pool();
+    let updated = TranscriptsRepository::update_speaker_for_transcript(
+        pool,
+        &transcript_id,
+        &speaker,
+    )
+    .await
+    .map_err(|e| format!("Failed to update transcript speaker: {}", e))?;
+    if !updated {
+        return Err(format!("Transcript {} not found", transcript_id));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RenameSpeakerResult {
+    pub updated: u64,
+}
+
+/// Rename a speaker across every segment in a meeting (e.g. speaker_1 → Alice).
+#[tauri::command]
+pub async fn api_rename_speaker_in_meeting<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    old_speaker: String,
+    new_speaker: String,
+) -> Result<RenameSpeakerResult, String> {
+    log_info!(
+        "api_rename_speaker_in_meeting: meeting_id={}, '{}' -> '{}'",
+        meeting_id,
+        old_speaker,
+        new_speaker
+    );
+    if new_speaker.trim().is_empty() {
+        return Err("New speaker name cannot be empty".to_string());
+    }
+    let pool = state.db_manager.pool();
+    let updated = TranscriptsRepository::rename_speaker_in_meeting(
+        pool,
+        &meeting_id,
+        &old_speaker,
+        &new_speaker,
+    )
+    .await
+    .map_err(|e| format!("Failed to rename speaker: {}", e))?;
+    Ok(RenameSpeakerResult { updated })
+}
+
 /// Opens the meeting's recording folder in the system file explorer
 #[tauri::command]
 pub async fn open_meeting_folder<R: Runtime>(

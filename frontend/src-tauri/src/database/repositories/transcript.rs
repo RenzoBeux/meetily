@@ -1,6 +1,7 @@
 use crate::api::{TranscriptSearchResult, TranscriptSegment};
 use chrono::Utc;
 use sqlx::{Connection, Error as SqlxError, SqlitePool};
+use std::collections::HashMap;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -81,6 +82,73 @@ impl TranscriptsRepository {
         transaction.commit().await?;
 
         Ok(meeting_id)
+    }
+
+    /// Bulk-update the speaker tag for a set of transcript IDs.
+    /// Used after diarization to overwrite the source-faithful tags
+    /// ("mic"/"system") with per-speaker IDs.
+    pub async fn update_speakers(
+        pool: &SqlitePool,
+        speaker_map: &HashMap<String, String>,
+    ) -> Result<u64, SqlxError> {
+        if speaker_map.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = pool.acquire().await?;
+        let mut transaction = conn.begin().await?;
+        let mut updated: u64 = 0;
+
+        for (transcript_id, speaker) in speaker_map {
+            let result = sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ?")
+                .bind(speaker)
+                .bind(transcript_id)
+                .execute(&mut *transaction)
+                .await?;
+            updated += result.rows_affected();
+        }
+
+        transaction.commit().await?;
+        info!("Updated speaker tags on {} transcripts", updated);
+        Ok(updated)
+    }
+
+    /// Update the speaker tag on a single transcript segment. Used when the
+    /// user manually reassigns one chunk to a different speaker.
+    pub async fn update_speaker_for_transcript(
+        pool: &SqlitePool,
+        transcript_id: &str,
+        speaker: &str,
+    ) -> Result<bool, SqlxError> {
+        let result = sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ?")
+            .bind(speaker)
+            .bind(transcript_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Rename a speaker across all transcripts in a meeting. Used when the
+    /// user gives a real name to a diarization-assigned ID like "speaker_1".
+    pub async fn rename_speaker_in_meeting(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        old_speaker: &str,
+        new_speaker: &str,
+    ) -> Result<u64, SqlxError> {
+        let result = sqlx::query(
+            "UPDATE transcripts SET speaker = ? WHERE meeting_id = ? AND speaker = ?",
+        )
+        .bind(new_speaker)
+        .bind(meeting_id)
+        .bind(old_speaker)
+        .execute(pool)
+        .await?;
+        info!(
+            "Renamed speaker '{}' -> '{}' on {} transcripts in meeting {}",
+            old_speaker, new_speaker, result.rows_affected(), meeting_id
+        );
+        Ok(result.rows_affected())
     }
 
     /// Searches for a query string within the transcripts.

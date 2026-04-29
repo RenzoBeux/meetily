@@ -3,10 +3,11 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, FolderOpen, RefreshCw, Download } from 'lucide-react';
+import { Copy, FolderOpen, RefreshCw, Download, Users } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
 import { ExportMarkdownDialog } from './ExportMarkdownDialog';
+import { DiarizeDialog } from './DiarizeDialog';
 import { ExportScope } from '@/hooks/meeting-details/useExportOperations';
 import { useConfig } from '@/contexts/ConfigContext';
 
@@ -36,8 +37,15 @@ export function TranscriptButtonGroup({
   const { betaFeatures } = useConfig();
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
+  const [showDiarizeDialog, setShowDiarizeDialog] = useState(false);
 
   const handleRetranscribeComplete = useCallback(async () => {
+    if (onRefetchTranscripts) {
+      await onRefetchTranscripts();
+    }
+  }, [onRefetchTranscripts]);
+
+  const handleDiarizeComplete = useCallback(async () => {
     if (onRefetchTranscripts) {
       await onRefetchTranscripts();
     }
@@ -103,6 +111,19 @@ export function TranscriptButtonGroup({
             <span className="hidden lg:inline">Enhance</span>
           </Button>
         )}
+
+        {betaFeatures.speakerDiarization && meetingId && meetingFolderPath && transcriptCount > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="xl:px-4"
+            onClick={() => setShowDiarizeDialog(true)}
+            title="Identify individual speakers in this meeting"
+          >
+            <Users className="xl:mr-2" size={18} />
+            <span className="hidden lg:inline">Diarize</span>
+          </Button>
+        )}
       </ButtonGroup>
 
       <ExportMarkdownDialog
@@ -120,6 +141,15 @@ export function TranscriptButtonGroup({
           meetingId={meetingId}
           meetingFolderPath={meetingFolderPath}
           onComplete={handleRetranscribeComplete}
+        />
+      )}
+
+      {betaFeatures.speakerDiarization && meetingId && (
+        <DiarizeDialog
+          open={showDiarizeDialog}
+          onOpenChange={setShowDiarizeDialog}
+          meetingId={meetingId}
+          onComplete={handleDiarizeComplete}
         />
       )}
     </div>

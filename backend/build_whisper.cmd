@@ -179,14 +179,8 @@ if not exist "%PACKAGE_NAME%\models" (
     echo exit /b 1
     echo.
     echo :run
-    echo REM Run the server
-    echo whisper-server.exe ^
-    echo     --model "%%MODEL%%" ^
-    echo     --host "%%HOST%%" ^
-    echo     --port "%%PORT%%" ^
-    echo     --diarize ^
-    echo     --language "%%LANGUAGE%%" ^
-    echo     --print-progress
+    echo REM Run the server (single line; ^ continuations don't survive a parenthesized echo block)
+    echo whisper-server.exe --model "%%MODEL%%" --host "%%HOST%%" --port "%%PORT%%" --diarize --language "%%LANGUAGE%%" --print-progress
 ) > "%PACKAGE_NAME%\run-server.cmd"
 
 echo Run script created successfully
@@ -228,9 +222,19 @@ if %ERRORLEVEL% neq 0 (
 echo Waiting for 5 seconds...
 timeout /t 5 /nobreak >nul
 
-copy "whisper.cpp\%MODEL_DIR%\%MODEL_NAME%" "%PACKAGE_NAME%\models\"
-if %ERRORLEVEL% neq 0 (
-    echo Failed to copy model
+REM The download script writes directly into %PACKAGE_NAME%\models, so the
+REM model is often already in place. Only copy from whisper.cpp\models if a
+REM source actually exists there; otherwise skip without erroring out.
+if exist "whisper.cpp\%MODEL_DIR%\%MODEL_NAME%" (
+    copy /Y "whisper.cpp\%MODEL_DIR%\%MODEL_NAME%" "%PACKAGE_NAME%\models\"
+    if %ERRORLEVEL% neq 0 (
+        echo Failed to copy model
+        goto :eof
+    )
+) else if exist "%PACKAGE_NAME%\models\%MODEL_NAME%" (
+    echo Model already in package directory, skipping copy
+) else (
+    echo Model not found in whisper.cpp\%MODEL_DIR% nor in %PACKAGE_NAME%\models
     goto :eof
 )
 

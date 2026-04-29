@@ -3,14 +3,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
-from typing import Optional, List
+from typing import Optional, List, Dict
 import logging
+import os
 from dotenv import load_dotenv
 from db import DatabaseManager
 import json
 from threading import Lock
 from transcript_processor import TranscriptProcessor
 from chat_processor import ChatProcessor
+from diarization import DiarizationService, map_segments_to_speakers
 import time
 
 # Load environment variables
@@ -171,6 +173,7 @@ class SummaryProcessor:
 # Initialize processor
 processor = SummaryProcessor()
 chat_processor = ChatProcessor()
+diarization_service = DiarizationService()
 
 
 class ChatMessageResponse(BaseModel):
@@ -526,6 +529,86 @@ async def get_summary(meeting_id: str):
                 "error": f"Internal server error: {str(e)}"
             }
         )
+
+class DiarizeMeetingRequest(BaseModel):
+    audio_file_path: str
+    transcripts: List[Transcript]
+    hf_token: Optional[str] = None
+    # Optional speaker-count hints. If `num_speakers` is set, it pins the
+    # count exactly; otherwise the (min, max) pair caps clustering. Leave
+    # all None to let pyannote auto-detect.
+    num_speakers: Optional[int] = None
+    min_speakers: Optional[int] = None
+    max_speakers: Optional[int] = None
+
+
+class DiarizeMeetingResponse(BaseModel):
+    speaker_map: Dict[str, str]
+    total_speakers: int
+    diarize_segment_count: int
+
+
+@app.post("/diarize-meeting", response_model=DiarizeMeetingResponse)
+async def diarize_meeting(request: DiarizeMeetingRequest):
+    """Run speaker diarization on a saved meeting's audio and return a
+    {transcript_id: speaker_label} mapping that the caller can apply to its
+    own transcript store."""
+    hf_token = request.hf_token or os.environ.get("HF_TOKEN")
+    if not hf_token:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "HuggingFace token required. Set the HF_TOKEN env var on the "
+                "backend or pass hf_token in the request body. The token also "
+                "needs access to pyannote/speaker-diarization-3.1 (accept the "
+                "model terms on huggingface.co)."
+            ),
+        )
+
+    if not os.path.exists(request.audio_file_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Audio file not found: {request.audio_file_path}",
+        )
+
+    if not request.transcripts:
+        raise HTTPException(
+            status_code=400, detail="No transcripts provided to diarize"
+        )
+
+    logger.info(
+        f"Diarizing {request.audio_file_path} with {len(request.transcripts)} transcripts"
+    )
+
+    try:
+        diarize_segments = await diarization_service.diarize(
+            request.audio_file_path,
+            hf_token,
+            num_speakers=request.num_speakers,
+            min_speakers=request.min_speakers,
+            max_speakers=request.max_speakers,
+        )
+    except Exception as e:
+        logger.error(f"Diarization run failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Diarization failed: {e}")
+
+    logger.info(f"Diarization produced {len(diarize_segments)} turns")
+
+    speaker_map = map_segments_to_speakers(
+        [t.model_dump() for t in request.transcripts],
+        diarize_segments,
+    )
+    total_speakers = len(set(speaker_map.values()))
+    logger.info(
+        f"Mapped {len(speaker_map)} transcripts to {total_speakers} speakers"
+    )
+
+    return DiarizeMeetingResponse(
+        speaker_map=speaker_map,
+        total_speakers=total_speakers,
+        diarize_segment_count=len(diarize_segments),
+    )
+
 
 @app.post("/save-transcript")
 async def save_transcript(request: SaveTranscriptRequest):
