@@ -98,9 +98,29 @@ class ChatProcessor:
             return OpenAIModel(model_name, provider=OpenAIProvider(api_key=api_key))
         raise ValueError(f"Unsupported model provider: {provider}")
 
+    @staticmethod
+    def _speaker_display_name(tag: str) -> str:
+        # Mirrors `speakerDisplayName` in the frontend so the LLM sees the
+        # same labels the user does in the UI.
+        if tag == "mic":
+            return "You"
+        if tag == "system":
+            return "Others"
+        return tag
+
     def _collect_transcript(self, meeting: dict) -> str:
         transcripts = meeting.get("transcripts") or []
-        text = "\n".join(t.get("text", "") for t in transcripts if t.get("text"))
+        lines = []
+        for t in transcripts:
+            text = t.get("text", "")
+            if not text:
+                continue
+            speaker = t.get("speaker")
+            if speaker:
+                lines.append(f"{self._speaker_display_name(speaker)}: {text}")
+            else:
+                lines.append(text)
+        text = "\n".join(lines)
         if len(text) > MAX_TRANSCRIPT_CHARS:
             text = text[:MAX_TRANSCRIPT_CHARS] + "\n\n[transcript truncated for length]"
         return text
@@ -111,7 +131,11 @@ class ChatProcessor:
             "Ground every answer strictly in the meeting transcript below. "
             "Quote only verbatim text that actually appears in the transcript. "
             "If the answer is not in the transcript, say you cannot find it rather than guessing.",
-            "Keep answers concise and reference specific moments or speakers when relevant.",
+            "Each transcript line that has a known speaker is prefixed `Speaker: text` — "
+            "use those labels when attributing statements. \"You\" is the local microphone, "
+            "\"Others\" is everyone else on the call, and other labels (e.g. speaker_1) come "
+            "from speaker diarization.",
+            "Keep answers concise and reference specific speakers or moments when relevant.",
             f"Meeting title: {meeting_title}",
             "--- TRANSCRIPT ---",
             transcript_text or "(no transcript available)",

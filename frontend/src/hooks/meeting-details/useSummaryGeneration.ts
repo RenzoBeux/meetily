@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import Analytics from '@/lib/analytics';
 import { isOllamaNotInstalledError } from '@/lib/utils';
 import { BuiltInModelInfo } from '@/lib/builtin-ai';
+import { speakerDisplayName } from '@/lib/speakerLabel';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -557,8 +558,16 @@ export function useSummaryGeneration({
       return `[${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}]`;
     };
 
+    // Include speaker labels (when set) so the LLM can attribute statements to
+    // specific people in the summary instead of producing speaker-agnostic
+    // bullet points. Format: `[MM:SS] Speaker: text` when known, `[MM:SS] text`
+    // otherwise.
     const fullTranscript = allTranscripts
-      .map(t => `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}`)
+      .map(t => {
+        const time = formatTime(t.audio_start_time, t.timestamp);
+        const name = speakerDisplayName(t.speaker);
+        return name ? `${time} ${name}: ${t.text}` : `${time} ${t.text}`;
+      })
       .join('\n');
 
     await processSummary({ transcriptText: fullTranscript, customPrompt });

@@ -23,3 +23,12 @@ export function formatSpeaker(tag: string | undefined | null): SpeakerLabel | nu
       return { label: tag, className: 'bg-gray-100 text-gray-700' };
   }
 }
+
+/**
+ * Plain display name for a speaker tag — same mapping as formatSpeaker but
+ * returns just the string. Used for prompt construction (summary, chat) where
+ * we want the LLM to see the same labels the user sees in the UI.
+ */
+export function speakerDisplayName(tag: string | undefined | null): string | null {
+  return formatSpeaker(tag)?.label ?? null;
+}

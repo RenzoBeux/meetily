@@ -215,12 +215,31 @@ pub async fn api_clear_chat_history<R: Runtime>(
     Ok(())
 }
 
+/// Map a stored speaker tag to the same display name the UI renders, so the
+/// LLM sees consistent labels. Mirrors `speakerDisplayName` in the frontend
+/// `lib/speakerLabel.ts`.
+fn speaker_display_name(tag: &str) -> &str {
+    match tag {
+        "mic" => "You",
+        "system" => "Others",
+        other => other,
+    }
+}
+
 fn build_transcript_text(meeting: &crate::api::api::MeetingDetails) -> String {
     let mut joined = meeting
         .transcripts
         .iter()
-        .map(|t| t.text.as_str())
-        .filter(|s| !s.is_empty())
+        .filter(|t| !t.text.is_empty())
+        .map(|t| {
+            // Prefix each line with the speaker (when set) so the LLM can
+            // attribute statements. Falls back to plain text for old
+            // transcripts that pre-date diarization.
+            match t.speaker.as_deref().filter(|s| !s.is_empty()) {
+                Some(tag) => format!("{}: {}", speaker_display_name(tag), t.text),
+                None => t.text.clone(),
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -238,7 +257,11 @@ fn build_system_prompt(meeting_title: &str, transcript_text: &str) -> String {
          Ground every answer strictly in the meeting transcript below. \
          Quote only verbatim text that actually appears in the transcript. \
          If the answer is not in the transcript, say you cannot find it rather than guessing. \
-         Keep answers concise and reference specific moments or speakers when relevant.\n\n",
+         Each transcript line that has a known speaker is prefixed `Speaker: text` — use \
+         those labels when attributing statements. \"You\" is the local microphone, \
+         \"Others\" is everyone else on the call, and other labels (e.g. speaker_1) come \
+         from speaker diarization. \
+         Keep answers concise and reference specific speakers or moments when relevant.\n\n",
     );
     prompt.push_str(&format!("Meeting title: {}\n\n", meeting_title));
     prompt.push_str("--- TRANSCRIPT ---\n");
