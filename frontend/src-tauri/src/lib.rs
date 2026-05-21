@@ -41,6 +41,7 @@ pub mod audio;
 pub mod config;
 pub mod console_utils;
 pub mod database;
+pub mod diarization;
 pub mod export;
 pub mod notifications;
 pub mod ollama;
@@ -541,6 +542,10 @@ pub fn run() {
             whisper_engine::commands::whisper_download_model,
             whisper_engine::commands::whisper_cancel_download,
             whisper_engine::commands::whisper_delete_corrupted_model,
+            // Speaker diarization commands
+            diarization::commands::diarization_models_status,
+            diarization::commands::get_runtime_acceleration,
+            diarization::commands::rediarize_meeting,
             // Parakeet engine commands
             parakeet_engine::commands::parakeet_init,
             parakeet_engine::commands::parakeet_get_available_models,

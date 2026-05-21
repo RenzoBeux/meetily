@@ -44,9 +44,16 @@ platform-default = []
 # Manual GPU acceleration options (for power users to override defaults)
 metal = ["whisper-rs/metal"]       # macOS: Apple Metal GPU (Auto-enabled on macOS)
 coreml = ["whisper-rs/coreml"]     # macOS: Apple CoreML acceleration
-cuda = ["whisper-rs/cuda"]         # Windows/Linux: NVIDIA CUDA GPU
+cuda = ["whisper-rs/cuda"]         # Windows/Linux: NVIDIA CUDA GPU (whisper only)
 vulkan = ["whisper-rs/vulkan"]     # Windows/Linux: AMD/Intel Vulkan GPU
 hipblas = ["whisper-rs/hipblas"]   # Linux: AMD ROCm HIP
+
+# Diarization GPU. Runtime-only flag: switches the sherpa-onnx provider from
+# "cpu" to "cuda". The user must ALSO point SHERPA_ONNX_LIB_DIR at a manually
+# fetched CUDA build of sherpa-onnx (e.g.
+# sherpa-onnx-v1.13.0-cuda-12.x-cudnn-9.x-{linux-x64-gpu,win-x64-cuda}.tar.bz2)
+# and ensure CUDA 12 + cuDNN 9 are installed at runtime.
+diarization-cuda = []
 
 # CPU optimizations (fallback for systems without GPU)
 openblas = ["whisper-rs/openblas"] # Optimized BLAS (Auto-enabled on Windows/Linux)
@@ -105,6 +112,16 @@ silero_rs = { git = "https://github.com/emotechlab/silero-rs", rev = "26a6460", 
 # Parakeet (ONNX-based fast transcription) dependencies
 ort = { version = "2.0.0-rc.10" }  # ONNX Runtime for Parakeet models
 thiserror = "2.0.16"                # Error handling for Parakeet
+
+# Used by diarization::models to extract sherpa-onnx pyannote bundle (.tar.bz2)
+tar = "0.4"
+bzip2 = "0.4"
+# NOTE: sherpa-onnx (speaker diarization) is declared in platform-specific
+# sections below. Windows uses `shared` linking to sidestep the MSVC /MT
+# (sherpa-onnx prebuilt) vs /MD (whisper-rs prebuilt) C-runtime conflict.
+# macOS/Linux use `static` for simpler bundling. The on-disk DLLs that
+# Windows shared mode produces (sherpa-onnx-c-api.dll, onnxruntime.dll) are
+# auto-copied next to the build artefact by sherpa-onnx-sys's build.rs.
 
 # Async
 tokio = { version = "1.32.0", features = ["full", "tracing"] }
@@ -172,6 +189,10 @@ futures-channel = "0.3.31"
 # CoreML provides additional acceleration for Apple Silicon chips
 whisper-rs = { version = "0.13.2", features = ["raw-api", "metal", "coreml"] }
 
+# Speaker diarization (pyannote-segmentation-3.0 + 3D-Speaker via sherpa-onnx).
+# macOS uses static linking — auto-downloads CPU prebuilt at build time.
+sherpa-onnx = { version = "1.13.0", default-features = false, features = ["static"] }
+
 # Windows-specific dependencies
 # Default: CPU-only build (no BLAS)
 # Users can enable features manually:
@@ -181,6 +202,12 @@ whisper-rs = { version = "0.13.2", features = ["raw-api", "metal", "coreml"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 whisper-rs = { version = "0.13.2", features = ["raw-api", "vulkan"] }
 futures-channel = "0.3.31"
+
+# Speaker diarization. Windows uses `shared` linking because sherpa-onnx's
+# Windows prebuilt static lib is /MT and whisper-rs-sys's prebuilt is /MD —
+# mixing them in one binary trips the MSVC RuntimeLibrary mismatch (LNK2038).
+# Shared mode delegates the CRT to sherpa-onnx-c-api.dll + onnxruntime.dll.
+sherpa-onnx = { version = "1.13.0", default-features = false, features = ["shared"] }
 
 # Linux-specific dependencies
 # Default: CPU-only build (no BLAS)
@@ -192,6 +219,12 @@ futures-channel = "0.3.31"
 [target.'cfg(target_os = "linux")'.dependencies]
 whisper-rs = { version = "0.13.2", features = ["raw-api"] }
 futures-channel = "0.3.31"
+
+# Speaker diarization. Linux uses static linking — auto-downloads CPU prebuilt.
+# For CUDA on Linux: also enable `--features diarization-cuda`, then point
+# SHERPA_ONNX_LIB_DIR at a manually fetched
+# sherpa-onnx-v1.13.0-cuda-12.x-cudnn-9.x-linux-x64-gpu.tar.bz2 archive.
+sherpa-onnx = { version = "1.13.0", default-features = false, features = ["static"] }
 
 [dev-dependencies]
 tempfile = "3.3.0"

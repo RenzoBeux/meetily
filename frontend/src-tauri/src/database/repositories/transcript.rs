@@ -83,6 +83,49 @@ impl TranscriptsRepository {
         Ok(meeting_id)
     }
 
+    /// Bulk-update the `speaker` column for a set of transcript rows by id.
+    /// All updates run in a single transaction so a failure mid-write rolls
+    /// back cleanly. Used by post-recording diarization (re-runs on past
+    /// meetings) — typical batch size is one row per transcript segment, so
+    /// per-row UPDATE is fine.
+    pub async fn update_speakers(
+        pool: &SqlitePool,
+        updates: &[(String, Option<String>)],
+    ) -> Result<usize, SqlxError> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = pool.acquire().await?;
+        let mut transaction = conn.begin().await?;
+
+        let mut affected: usize = 0;
+        for (id, speaker) in updates {
+            let result = sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ?")
+                .bind(speaker)
+                .bind(id)
+                .execute(&mut *transaction)
+                .await;
+
+            match result {
+                Ok(res) => affected += res.rows_affected() as usize,
+                Err(e) => {
+                    error!("Failed to update speaker for transcript {}: {}", id, e);
+                    transaction.rollback().await?;
+                    return Err(e);
+                }
+            }
+        }
+
+        transaction.commit().await?;
+        info!(
+            "Updated speaker on {} of {} transcript rows",
+            affected,
+            updates.len()
+        );
+        Ok(affected)
+    }
+
     /// Searches for a query string within the transcripts.
     /// It returns a list of matching transcripts with context.
     pub async fn search_transcripts(

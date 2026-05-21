@@ -3,9 +3,10 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, FolderOpen, RefreshCw, Download } from 'lucide-react';
+import { Copy, FolderOpen, RefreshCw, Download, Users } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
+import { RediarizeDialog } from './RediarizeDialog';
 import { ExportMarkdownDialog } from './ExportMarkdownDialog';
 import { ExportScope } from '@/hooks/meeting-details/useExportOperations';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -35,9 +36,16 @@ export function TranscriptButtonGroup({
 }: TranscriptButtonGroupProps) {
   const { betaFeatures } = useConfig();
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
+  const [showRediarizeDialog, setShowRediarizeDialog] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
 
   const handleRetranscribeComplete = useCallback(async () => {
+    if (onRefetchTranscripts) {
+      await onRefetchTranscripts();
+    }
+  }, [onRefetchTranscripts]);
+
+  const handleRediarizeComplete = useCallback(async () => {
     if (onRefetchTranscripts) {
       await onRefetchTranscripts();
     }
@@ -103,6 +111,22 @@ export function TranscriptButtonGroup({
             <span className="hidden lg:inline">Enhance</span>
           </Button>
         )}
+
+        {meetingId && meetingFolderPath && transcriptCount > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="xl:px-4"
+            onClick={() => {
+              Analytics.trackButtonClick('identify_speakers', 'meeting_details');
+              setShowRediarizeDialog(true);
+            }}
+            title="Identify speakers in this meeting"
+          >
+            <Users className="xl:mr-2" size={18} />
+            <span className="hidden lg:inline">Speakers</span>
+          </Button>
+        )}
       </ButtonGroup>
 
       <ExportMarkdownDialog
@@ -120,6 +144,15 @@ export function TranscriptButtonGroup({
           meetingId={meetingId}
           meetingFolderPath={meetingFolderPath}
           onComplete={handleRetranscribeComplete}
+        />
+      )}
+
+      {meetingId && meetingFolderPath && (
+        <RediarizeDialog
+          open={showRediarizeDialog}
+          onOpenChange={setShowRediarizeDialog}
+          meetingId={meetingId}
+          onComplete={handleRediarizeComplete}
         />
       )}
     </div>

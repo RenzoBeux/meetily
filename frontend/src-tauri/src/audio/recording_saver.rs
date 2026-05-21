@@ -476,6 +476,23 @@ impl RecordingSaver {
         }
     }
 
+    /// Shared handle to the in-memory transcript-segment buffer. Diarization
+    /// uses this to mutate the `speaker` field after the WAV is on disk.
+    pub fn transcript_segments_handle(&self) -> Arc<Mutex<Vec<TranscriptSegment>>> {
+        self.transcript_segments.clone()
+    }
+
+    /// Re-serialise transcripts.json from the current in-memory segments.
+    /// Called by the diarization post-processor after it rewrites speaker tags.
+    pub fn rewrite_transcripts_now(&self) -> Result<()> {
+        let folder = self
+            .meeting_folder
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Cannot rewrite transcripts: meeting folder not set"))?
+            .clone();
+        self.write_transcripts_json(&folder)
+    }
+
     /// Get meeting name (for reload sync)
     pub fn get_meeting_name(&self) -> Option<String> {
         self.meeting_name.clone()

@@ -25,6 +25,20 @@ export interface ModelDownloadCompletePayload {
   modelName: string;
 }
 
+export interface DiarizationProgressPayload {
+  status: 'starting' | 'running' | 'aligning' | 'done' | 'skipped' | 'error';
+  speakers?: number;
+  segments?: number;
+  reason?: string;
+}
+
+export interface DiarizationModelDownloadProgressPayload {
+  name: string;
+  downloaded: number;
+  total: number;
+  percent: number;
+}
+
 /**
  * Transcript Service
  * Singleton service for managing transcription operations and transcript history
@@ -109,6 +123,43 @@ export class TranscriptService {
   async onParakeetModelDownloadComplete(callback: (modelName: string) => void): Promise<UnlistenFn> {
     return listen<ModelDownloadCompletePayload>('parakeet-model-download-complete', (event) => {
       callback(event.payload.modelName);
+    });
+  }
+
+  /**
+   * Listen for diarization progress events emitted after a recording stops.
+   */
+  async onDiarizationProgress(
+    callback: (payload: DiarizationProgressPayload) => void,
+  ): Promise<UnlistenFn> {
+    return listen<DiarizationProgressPayload>('diarization-progress', (event) => {
+      callback(event.payload);
+    });
+  }
+
+  /**
+   * Listen for diarization model download progress (first run).
+   */
+  async onDiarizationModelDownloadProgress(
+    callback: (payload: DiarizationModelDownloadProgressPayload) => void,
+  ): Promise<UnlistenFn> {
+    return listen<DiarizationModelDownloadProgressPayload>(
+      'diarization-model-download-progress',
+      (event) => {
+        callback(event.payload);
+      },
+    );
+  }
+
+  /**
+   * Listen for the post-diarization rewrite of all transcript segments.
+   * Payload is the full updated TranscriptSegment[] from the recording_saver.
+   */
+  async onTranscriptRediarized(
+    callback: (segments: Transcript[]) => void,
+  ): Promise<UnlistenFn> {
+    return listen<Transcript[]>('transcript-rediarized', (event) => {
+      callback(event.payload);
     });
   }
 }
