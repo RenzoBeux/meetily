@@ -9,7 +9,7 @@ use crate::{
         models::MeetingModel,
         repositories::{
             meeting::MeetingsRepository, setting::SettingsRepository,
-            transcript::TranscriptsRepository,
+            transcript::{NewSegmentRow, TranscriptsRepository},
         },
     },
     state::AppState,
@@ -899,6 +899,292 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
         Err(e) => {
             log_error!("Error retrieving transcripts for meeting {}: {}", meeting_id, e);
             Err(format!("Failed to retrieve transcripts: {}", e))
+        }
+    }
+}
+
+/// Payload describing the tail half of a split, received from the frontend.
+/// Fields mirror MeetingTranscript so the client can hand back the same row
+/// shape it just rendered.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NewSegmentPayload {
+    pub id: String,
+    pub text: String,
+    pub timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_start_time: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_end_time: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
+}
+
+#[tauri::command]
+pub async fn api_update_segment_text<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    segment_id: String,
+    new_text: String,
+) -> Result<(), String> {
+    log_info!(
+        "api_update_segment_text called for segment_id: {}",
+        segment_id
+    );
+
+    if segment_id.trim().is_empty() {
+        return Err("segment_id is required".to_string());
+    }
+
+    let pool = state.db_manager.pool();
+    match TranscriptsRepository::update_segment_text(pool, &segment_id, &new_text).await {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            log_warn!("No segment matched id {}", segment_id);
+            Err(format!("Segment not found: {}", segment_id))
+        }
+        Err(e) => {
+            log_error!("Failed to update segment {}: {}", segment_id, e);
+            Err(format!("Failed to update segment: {}", e))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn api_delete_segments<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    segment_ids: Vec<String>,
+) -> Result<usize, String> {
+    log_info!(
+        "api_delete_segments called for {} segments",
+        segment_ids.len()
+    );
+
+    if segment_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let pool = state.db_manager.pool();
+    match TranscriptsRepository::delete_segments(pool, &segment_ids).await {
+        Ok(n) => Ok(n),
+        Err(e) => {
+            log_error!("Failed to delete segments: {}", e);
+            Err(format!("Failed to delete segments: {}", e))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn api_update_segment_speakers<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    updates: Vec<(String, Option<String>)>,
+) -> Result<usize, String> {
+    log_info!(
+        "api_update_segment_speakers called for {} updates",
+        updates.len()
+    );
+
+    if updates.is_empty() {
+        return Ok(0);
+    }
+
+    let pool = state.db_manager.pool();
+    match TranscriptsRepository::update_speakers(pool, &updates).await {
+        Ok(n) => Ok(n),
+        Err(e) => {
+            log_error!("Failed to update speakers: {}", e);
+            Err(format!("Failed to update speakers: {}", e))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn api_merge_segments<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    keeper_id: String,
+    merged_text: String,
+    audio_end_time: f64,
+    duration: f64,
+    speaker: Option<String>,
+    deleted_ids: Vec<String>,
+) -> Result<(), String> {
+    log_info!(
+        "api_merge_segments called: keeper={}, deleting={}",
+        keeper_id,
+        deleted_ids.len()
+    );
+
+    if keeper_id.trim().is_empty() {
+        return Err("keeper_id is required".to_string());
+    }
+    if deleted_ids.is_empty() {
+        return Err("at least one segment to merge is required".to_string());
+    }
+    if deleted_ids.iter().any(|id| id == &keeper_id) {
+        return Err("keeper_id must not appear in deleted_ids".to_string());
+    }
+
+    let pool = state.db_manager.pool();
+    match TranscriptsRepository::merge_segments(
+        pool,
+        &keeper_id,
+        &merged_text,
+        audio_end_time,
+        duration,
+        speaker.as_deref(),
+        &deleted_ids,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            log_error!("Failed to merge segments into {}: {}", keeper_id, e);
+            Err(format!("Failed to merge segments: {}", e))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn api_split_segment<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    source_id: String,
+    head_text: String,
+    head_end_time: f64,
+    head_duration: f64,
+    tail: NewSegmentPayload,
+) -> Result<NewSegmentPayload, String> {
+    log_info!(
+        "api_split_segment called: source={}, tail_id={}",
+        source_id,
+        tail.id
+    );
+
+    if source_id.trim().is_empty() {
+        return Err("source_id is required".to_string());
+    }
+    if meeting_id.trim().is_empty() {
+        return Err("meeting_id is required".to_string());
+    }
+    if tail.id == source_id {
+        return Err("tail.id must differ from source_id".to_string());
+    }
+
+    let pool = state.db_manager.pool();
+    let row = NewSegmentRow {
+        id: tail.id.clone(),
+        meeting_id: meeting_id.clone(),
+        text: tail.text.clone(),
+        timestamp: tail.timestamp.clone(),
+        audio_start_time: tail.audio_start_time,
+        audio_end_time: tail.audio_end_time,
+        duration: tail.duration,
+        speaker: tail.speaker.clone(),
+    };
+
+    match TranscriptsRepository::split_segment(
+        pool,
+        &source_id,
+        &head_text,
+        head_end_time,
+        head_duration,
+        &row,
+    )
+    .await
+    {
+        Ok(()) => Ok(tail),
+        Err(e) => {
+            log_error!("Failed to split segment {}: {}", source_id, e);
+            Err(format!("Failed to split segment: {}", e))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn api_insert_segments<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    segments: Vec<NewSegmentPayload>,
+) -> Result<usize, String> {
+    log_info!(
+        "api_insert_segments called: meeting_id={}, count={}",
+        meeting_id,
+        segments.len()
+    );
+
+    if meeting_id.trim().is_empty() {
+        return Err("meeting_id is required".to_string());
+    }
+    if segments.is_empty() {
+        return Ok(0);
+    }
+
+    let pool = state.db_manager.pool();
+    let rows: Vec<NewSegmentRow> = segments
+        .into_iter()
+        .map(|s| NewSegmentRow {
+            id: s.id,
+            meeting_id: meeting_id.clone(),
+            text: s.text,
+            timestamp: s.timestamp,
+            audio_start_time: s.audio_start_time,
+            audio_end_time: s.audio_end_time,
+            duration: s.duration,
+            speaker: s.speaker,
+        })
+        .collect();
+
+    match TranscriptsRepository::bulk_insert_segments(pool, &rows).await {
+        Ok(n) => Ok(n),
+        Err(e) => {
+            log_error!("Failed to insert segments: {}", e);
+            Err(format!("Failed to insert segments: {}", e))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn api_update_segment_bounds<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    segment_id: String,
+    new_text: String,
+    audio_end_time: f64,
+    duration: f64,
+) -> Result<(), String> {
+    log_info!(
+        "api_update_segment_bounds called for segment_id: {}",
+        segment_id
+    );
+
+    if segment_id.trim().is_empty() {
+        return Err("segment_id is required".to_string());
+    }
+
+    let pool = state.db_manager.pool();
+    match TranscriptsRepository::update_segment_bounds(
+        pool,
+        &segment_id,
+        &new_text,
+        audio_end_time,
+        duration,
+    )
+    .await
+    {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            log_warn!("No segment matched id {}", segment_id);
+            Err(format!("Segment not found: {}", segment_id))
+        }
+        Err(e) => {
+            log_error!("Failed to update segment bounds {}: {}", segment_id, e);
+            Err(format!("Failed to update segment bounds: {}", e))
         }
     }
 }

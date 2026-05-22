@@ -3,7 +3,7 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, FolderOpen, RefreshCw, Download, Users } from 'lucide-react';
+import { Copy, FolderOpen, RefreshCw, Download, Users, Pencil, Check, Undo2, Redo2 } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
 import { RediarizeDialog } from './RediarizeDialog';
@@ -21,6 +21,15 @@ interface TranscriptButtonGroupProps {
   meetingId?: string;
   meetingFolderPath?: string | null;
   onRefetchTranscripts?: () => Promise<void>;
+  // Edit-mode controls (only present on saved meetings)
+  isEditMode?: boolean;
+  onEnterEditMode?: () => void;
+  onExitEditMode?: () => void;
+  isRecording?: boolean;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
 }
 
 
@@ -33,6 +42,14 @@ export function TranscriptButtonGroup({
   meetingId,
   meetingFolderPath,
   onRefetchTranscripts,
+  isEditMode = false,
+  onEnterEditMode,
+  onExitEditMode,
+  isRecording = false,
+  canUndo = false,
+  canRedo = false,
+  onUndo,
+  onRedo,
 }: TranscriptButtonGroupProps) {
   const { betaFeatures } = useConfig();
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
@@ -125,6 +142,59 @@ export function TranscriptButtonGroup({
           >
             <Users className="xl:mr-2" size={18} />
             <span className="hidden lg:inline">Speakers</span>
+          </Button>
+        )}
+
+        {!isRecording && transcriptCount > 0 && (onEnterEditMode || onExitEditMode) && (
+          <Button
+            size="sm"
+            variant={isEditMode ? 'default' : 'outline'}
+            className="xl:px-4"
+            onClick={() => {
+              if (isEditMode) {
+                Analytics.trackButtonClick('exit_edit_transcript', 'meeting_details');
+                onExitEditMode?.();
+              } else {
+                Analytics.trackButtonClick('enter_edit_transcript', 'meeting_details');
+                onEnterEditMode?.();
+              }
+            }}
+            title={isEditMode ? 'Exit edit mode' : 'Edit transcript'}
+          >
+            {isEditMode ? (
+              <>
+                <Check className="xl:mr-2" size={18} />
+                <span className="hidden lg:inline">Done</span>
+              </>
+            ) : (
+              <>
+                <Pencil className="xl:mr-2" size={18} />
+                <span className="hidden lg:inline">Edit</span>
+              </>
+            )}
+          </Button>
+        )}
+
+        {isEditMode && onUndo && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onUndo}
+            disabled={!canUndo}
+            title="Undo (Ctrl+Z)"
+          >
+            <Undo2 size={18} />
+          </Button>
+        )}
+        {isEditMode && onRedo && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onRedo}
+            disabled={!canRedo}
+            title="Redo (Ctrl+Shift+Z / Ctrl+Y)"
+          >
+            <Redo2 size={18} />
           </Button>
         )}
       </ButtonGroup>
