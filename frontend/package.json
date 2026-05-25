@@ -5,7 +5,7 @@
     "main": "electron/main.js",
     "scripts": {
         "dev": "next dev -p 3118",
-        "build": "next build",
+        "build": "next build && node scripts/stage-sherpa-dlls.mjs",
         "export": "next export",
         "start": "next start -p 3118",
         "tauri": "tauri",
