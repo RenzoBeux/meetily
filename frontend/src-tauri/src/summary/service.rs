@@ -100,8 +100,12 @@ impl SummaryService {
             }
         };
 
-        // Validate and setup api_key, Flexible for Ollama, BuiltInAI, and CustomOpenAI
-        let api_key = if provider == LLMProvider::Ollama || provider == LLMProvider::BuiltInAI || provider == LLMProvider::CustomOpenAI {
+        // Validate and setup api_key, flexible for local providers
+        let api_key = if provider == LLMProvider::Ollama
+            || provider == LLMProvider::BuiltInAI
+            || provider == LLMProvider::CustomOpenAI
+            || provider == LLMProvider::LMStudio
+        {
             // These providers don't require API keys from the standard database column
             String::new()
         } else {
@@ -127,6 +131,20 @@ impl SummaryService {
                 Ok(None) => None,
                 Err(e) => {
                     info!("Failed to retrieve Ollama endpoint: {}, using default", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Get LM Studio endpoint if provider is LMStudio
+        let lmstudio_endpoint = if provider == LLMProvider::LMStudio {
+            match SettingsRepository::get_model_config(&pool).await {
+                Ok(Some(config)) => config.lm_studio_endpoint,
+                Ok(None) => None,
+                Err(e) => {
+                    info!("Failed to retrieve LM Studio endpoint: {}, using default", e);
                     None
                 }
             }
@@ -211,6 +229,11 @@ impl SummaryService {
                     1748  // 2048 - 300 for overhead
                 }
             }
+        } else if provider == LLMProvider::LMStudio {
+            // LM Studio exposes an OpenAI-compatible API but does not advertise
+            // context size, so use a conservative default that works for most
+            // locally-hosted models. Reserve 300 tokens for prompt overhead.
+            8000
         } else {
             // Cloud providers (OpenAI, Claude, Groq, CustomOpenAI) handle large contexts automatically
             100000  // Effectively unlimited for single-pass processing
@@ -232,6 +255,7 @@ impl SummaryService {
             token_threshold,
             ollama_endpoint.as_deref(),
             custom_openai_endpoint.as_deref(),
+            lmstudio_endpoint.as_deref(),
             custom_openai_max_tokens,
             custom_openai_temperature,
             custom_openai_top_p,

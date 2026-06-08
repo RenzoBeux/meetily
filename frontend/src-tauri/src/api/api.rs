@@ -528,14 +528,16 @@ pub async fn api_save_model_config<R: Runtime>(
     whisper_model: String,
     api_key: Option<String>,
     ollama_endpoint: Option<String>,
+    lm_studio_endpoint: Option<String>,
     _auth_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
-        "💾 api_save_model_config called (native): provider='{}', model='{}', whisperModel='{}', ollamaEndpoint={:?}",
+        "💾 api_save_model_config called (native): provider='{}', model='{}', whisperModel='{}', ollamaEndpoint={:?}, lmStudioEndpoint={:?}",
         &provider,
         &model,
         &whisper_model,
-        &ollama_endpoint
+        &ollama_endpoint,
+        &lm_studio_endpoint
     );
     let pool = state.db_manager.pool();
 
@@ -545,6 +547,7 @@ pub async fn api_save_model_config<R: Runtime>(
         &model,
         &whisper_model,
         ollama_endpoint.as_deref(),
+        lm_studio_endpoint.as_deref(),
     )
     .await
     {

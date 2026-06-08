@@ -12,6 +12,8 @@ pub struct SaveModelConfigRequest {
     pub api_key: Option<String>,
     #[serde(rename = "ollamaEndpoint")]
     pub ollama_endpoint: Option<String>,
+    #[serde(rename = "lmStudioEndpoint")]
+    pub lm_studio_endpoint: Option<String>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -44,23 +46,26 @@ impl SettingsRepository {
         model: &str,
         whisper_model: &str,
         ollama_endpoint: Option<&str>,
+        lm_studio_endpoint: Option<&str>,
     ) -> std::result::Result<(), sqlx::Error> {
         // Using id '1' for backward compatibility
         sqlx::query(
             r#"
-            INSERT INTO settings (id, provider, model, whisperModel, ollamaEndpoint)
-            VALUES ('1', $1, $2, $3, $4)
+            INSERT INTO settings (id, provider, model, whisperModel, ollamaEndpoint, lmStudioEndpoint)
+            VALUES ('1', $1, $2, $3, $4, $5)
             ON CONFLICT(id) DO UPDATE SET
                 provider = excluded.provider,
                 model = excluded.model,
                 whisperModel = excluded.whisperModel,
-                ollamaEndpoint = excluded.ollamaEndpoint
+                ollamaEndpoint = excluded.ollamaEndpoint,
+                lmStudioEndpoint = excluded.lmStudioEndpoint
             "#,
         )
         .bind(provider)
         .bind(model)
         .bind(whisper_model)
         .bind(ollama_endpoint)
+        .bind(lm_studio_endpoint)
         .execute(pool)
         .await?;
 

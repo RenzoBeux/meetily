@@ -148,6 +148,7 @@ pub fn extract_meeting_name_from_markdown(markdown: &str) -> Option<String> {
 /// * `token_threshold` - Token limit for single-pass processing (default 4000)
 /// * `ollama_endpoint` - Optional custom Ollama endpoint
 /// * `custom_openai_endpoint` - Optional custom OpenAI-compatible endpoint
+/// * `lmstudio_endpoint` - Optional custom LM Studio endpoint
 /// * `max_tokens` - Optional max tokens for completion (CustomOpenAI provider)
 /// * `temperature` - Optional temperature (CustomOpenAI provider)
 /// * `top_p` - Optional top_p (CustomOpenAI provider)
@@ -167,6 +168,7 @@ pub async fn generate_meeting_summary(
     token_threshold: usize,
     ollama_endpoint: Option<&str>,
     custom_openai_endpoint: Option<&str>,
+    lmstudio_endpoint: Option<&str>,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     top_p: Option<f32>,
@@ -191,9 +193,13 @@ pub async fn generate_meeting_summary(
     let successful_chunk_count: i64;
 
     // Strategy: Use single-pass for cloud providers or short transcripts
-    // Use multi-level chunking for Ollama/BuiltInAI with long transcripts
+    // Use multi-level chunking for Ollama/BuiltInAI/LMStudio with long transcripts
     // Note: CustomOpenAI is treated like cloud providers (unlimited context)
-    if (provider != &LLMProvider::Ollama && provider != &LLMProvider::BuiltInAI) || total_tokens < token_threshold {
+    if (provider != &LLMProvider::Ollama
+        && provider != &LLMProvider::BuiltInAI
+        && provider != &LLMProvider::LMStudio)
+        || total_tokens < token_threshold
+    {
         info!(
             "Using single-pass summarization (tokens: {}, threshold: {})",
             total_tokens, token_threshold
@@ -236,6 +242,7 @@ pub async fn generate_meeting_summary(
                 &user_prompt_chunk,
                 ollama_endpoint,
                 custom_openai_endpoint,
+                lmstudio_endpoint,
                 max_tokens,
                 temperature,
                 top_p,
@@ -291,6 +298,7 @@ pub async fn generate_meeting_summary(
                 &user_prompt_combine,
                 ollama_endpoint,
                 custom_openai_endpoint,
+                lmstudio_endpoint,
                 max_tokens,
                 temperature,
                 top_p,
@@ -366,6 +374,7 @@ pub async fn generate_meeting_summary(
         &final_user_prompt,
         ollama_endpoint,
         custom_openai_endpoint,
+        lmstudio_endpoint,
         max_tokens,
         temperature,
         top_p,

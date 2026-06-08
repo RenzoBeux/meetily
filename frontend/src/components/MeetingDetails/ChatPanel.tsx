@@ -25,7 +25,7 @@ interface ChatPanelProps {
   hasTranscripts: boolean;
 }
 
-type ChatProvider = 'ollama' | 'claude' | 'groq' | 'openai' | 'builtin-ai' | 'custom-openai' | 'openrouter';
+type ChatProvider = 'ollama' | 'claude' | 'groq' | 'openai' | 'builtin-ai' | 'custom-openai' | 'openrouter' | 'lmstudio';
 
 const PROVIDER_LABEL: Record<ChatProvider, string> = {
   ollama: 'Ollama (local)',
@@ -35,6 +35,7 @@ const PROVIDER_LABEL: Record<ChatProvider, string> = {
   'builtin-ai': 'Built-in AI (local)',
   'custom-openai': 'Custom OpenAI',
   openrouter: 'OpenRouter',
+  lmstudio: 'LM Studio (local)',
 };
 
 export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
@@ -85,6 +86,7 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
         whisperModel: next.whisperModel,
         apiKey: next.apiKey ?? null,
         ollamaEndpoint: next.ollamaEndpoint ?? null,
+        lmStudioEndpoint: next.lmStudioEndpoint ?? null,
       });
       const { emit } = await import('@tauri-apps/api/event');
       await emit('model-config-updated', next);

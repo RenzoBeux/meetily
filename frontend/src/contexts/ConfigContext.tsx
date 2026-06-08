@@ -275,6 +275,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
             model: data.model || prev.model,
             whisperModel: data.whisperModel || prev.whisperModel,
             ollamaEndpoint: data.ollamaEndpoint,
+            lmStudioEndpoint: data.lmStudioEndpoint,
           }));
 
           // Seed per-provider model cache from DB
@@ -370,6 +371,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     openai: ['gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo'],
     'builtin-ai': [],
     'custom-openai': [],
+    lmstudio: [],
   };
 
   // Toggle confidence indicator with localStorage persistence

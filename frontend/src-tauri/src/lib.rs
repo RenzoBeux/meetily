@@ -49,6 +49,7 @@ pub mod onboarding;
 pub mod openai;
 pub mod anthropic;
 pub mod groq;
+pub mod lmstudio;
 pub mod openrouter;
 pub mod parakeet_engine;
 pub mod state;
@@ -606,6 +607,7 @@ pub fn run() {
             ollama::pull_ollama_model,
             ollama::delete_ollama_model,
             ollama::get_ollama_model_context,
+            lmstudio::get_lmstudio_models,
             openai::openai::get_openai_models,
             anthropic::anthropic::get_anthropic_models,
             groq::groq::get_groq_models,

@@ -89,7 +89,10 @@ pub async fn api_send_chat_message<R: Runtime>(
     let provider_enum = LLMProvider::from_str(&provider)?;
 
     let api_key: String = match &provider_enum {
-        LLMProvider::Ollama | LLMProvider::BuiltInAI | LLMProvider::CustomOpenAI => String::new(),
+        LLMProvider::Ollama
+        | LLMProvider::BuiltInAI
+        | LLMProvider::CustomOpenAI
+        | LLMProvider::LMStudio => String::new(),
         LLMProvider::OpenAI | LLMProvider::Claude | LLMProvider::Groq | LLMProvider::OpenRouter => {
             match SettingsRepository::get_api_key(pool, &provider).await {
                 Ok(Some(key)) if !key.is_empty() => key,
@@ -109,6 +112,16 @@ pub async fn api_send_chat_message<R: Runtime>(
             .ok()
             .flatten()
             .and_then(|c| c.ollama_endpoint)
+    } else {
+        None
+    };
+
+    let lmstudio_endpoint = if matches!(provider_enum, LLMProvider::LMStudio) {
+        SettingsRepository::get_model_config(pool)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|c| c.lm_studio_endpoint)
     } else {
         None
     };
@@ -160,6 +173,7 @@ pub async fn api_send_chat_message<R: Runtime>(
         &user_prompt,
         ollama_endpoint.as_deref(),
         custom_openai_endpoint.as_deref(),
+        lmstudio_endpoint.as_deref(),
         custom_openai_max_tokens,
         custom_openai_temperature,
         custom_openai_top_p,

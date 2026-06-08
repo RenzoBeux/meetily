@@ -73,6 +73,7 @@ pub enum LLMProvider {
     OpenRouter,
     BuiltInAI,
     CustomOpenAI,
+    LMStudio,
 }
 
 impl LLMProvider {
@@ -86,6 +87,7 @@ impl LLMProvider {
             "openrouter" => Ok(Self::OpenRouter),
             "builtin-ai" | "local-llama" | "localllama" => Ok(Self::BuiltInAI),
             "custom-openai" => Ok(Self::CustomOpenAI),
+            "lmstudio" | "lm-studio" | "lm_studio" => Ok(Self::LMStudio),
             _ => Err(format!("Unsupported LLM provider: {}", s)),
         }
     }
@@ -102,6 +104,7 @@ impl LLMProvider {
 /// * `user_prompt` - User query/content to process
 /// * `ollama_endpoint` - Optional custom Ollama endpoint (defaults to localhost:11434)
 /// * `custom_openai_endpoint` - Optional custom OpenAI-compatible endpoint
+/// * `lmstudio_endpoint` - Optional custom LM Studio endpoint (defaults to localhost:1234)
 /// * `max_tokens` - Optional max tokens (for CustomOpenAI provider)
 /// * `temperature` - Optional temperature (for CustomOpenAI provider)
 /// * `top_p` - Optional top_p (for CustomOpenAI provider)
@@ -119,6 +122,7 @@ pub async fn generate_summary(
     user_prompt: &str,
     ollama_endpoint: Option<&str>,
     custom_openai_endpoint: Option<&str>,
+    lmstudio_endpoint: Option<&str>,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     top_p: Option<f32>,
@@ -175,6 +179,22 @@ pub async fn generate_summary(
                 .ok_or_else(|| "Custom OpenAI endpoint not configured".to_string())?;
             (
                 format!("{}/chat/completions", endpoint.trim_end_matches('/')),
+                header::HeaderMap::new(),
+            )
+        }
+        LLMProvider::LMStudio => {
+            let host = lmstudio_endpoint
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "http://localhost:1234".to_string());
+            // Endpoint may be supplied with or without the /v1 suffix.
+            let trimmed = host.trim_end_matches('/');
+            let base = if trimmed.ends_with("/v1") {
+                trimmed.to_string()
+            } else {
+                format!("{}/v1", trimmed)
+            };
+            (
+                format!("{}/chat/completions", base),
                 header::HeaderMap::new(),
             )
         }
@@ -342,5 +362,6 @@ fn provider_name(provider: &LLMProvider) -> &str {
         LLMProvider::BuiltInAI => "Built-in AI",
         LLMProvider::OpenRouter => "OpenRouter",
         LLMProvider::CustomOpenAI => "Custom OpenAI",
+        LLMProvider::LMStudio => "LM Studio",
     }
 }
