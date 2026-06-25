@@ -2,7 +2,8 @@
 //
 // Two ONNX files are needed:
 //   1. Pyannote segmentation 3.0 (~6 MB) — finds speaker-change boundaries.
-//   2. 3D-Speaker eres2net embedding (~75 MB) — extracts per-segment voice prints.
+//   2. WeSpeaker English VoxCeleb ResNet293 embedding (~109 MB) — extracts
+//      per-segment voice prints (English-native, large-margin trained).
 //
 // Both are mirrored on the official sherpa-onnx Hugging Face / GitHub releases.
 // The first time a recording is stopped with diarization enabled we download
@@ -28,15 +29,16 @@ const SEGMENTATION_FILENAME: &str = "sherpa-onnx-pyannote-segmentation-3-0/model
 // truncated downloads — not pinning exact size in case upstream re-quantises.
 const SEGMENTATION_MIN_BYTES: u64 = 1024 * 1024; // 1 MB
 
-// 3D-Speaker CAM++ bilingual (zh+en) "advanced" — 28 MB, trained on both
-// Chinese and English, designed for general cross-lingual usage. The
-// previously-used `eres2net_base_sv_zh-cn_3dspeaker_16k` was Mandarin-only
-// and produced noisy embeddings on English meetings (200+ "speakers" on a
-// single recording). Note the upstream release tag's typo: "recongition",
-// not "recognition" — that is the actual GitHub release tag.
-const EMBEDDING_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx";
-const EMBEDDING_FILENAME: &str = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx";
-const EMBEDDING_MIN_BYTES: u64 = 15 * 1024 * 1024; // 15 MB floor (real ~28 MB)
+// WeSpeaker English VoxCeleb ResNet293 (large-margin) — ~109 MB, trained on
+// English VoxCeleb. English-native embeddings separate English speakers far
+// more cleanly than the previous bilingual zh+en CAM++ (which, being
+// Mandarin-centric, blurred English voices and over-segmented into "too many
+// speakers"). ResNet293_LM is the highest-accuracy English option in the
+// sherpa-onnx zoo. Note the upstream release tag's typo: "recongition", not
+// "recognition" — that is the actual GitHub release tag.
+const EMBEDDING_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet293_LM.onnx";
+const EMBEDDING_FILENAME: &str = "wespeaker_en_voxceleb_resnet293_LM.onnx";
+const EMBEDDING_MIN_BYTES: u64 = 60 * 1024 * 1024; // 60 MB floor (real ~109 MB)
 
 #[derive(Debug, Clone)]
 pub struct DiarizationModelPaths {

@@ -365,10 +365,28 @@ impl RecordingManager {
             serde_json::json!({"status": "running"}),
         );
 
+        // Silence the local mic regions before clustering so the diarizer only
+        // sees the remote/"them" audio; the mic stream stays "You" (anchored in
+        // the aligner). Ranges come straight from the live "mic"-tagged segments.
+        let mic_ranges_handle = self.recording_saver.transcript_segments_handle();
+        let mic_ranges: Vec<(f64, f64)> = match mic_ranges_handle.lock() {
+            Ok(segs) => segs
+                .iter()
+                .filter(|s| s.speaker == "mic")
+                .map(|s| (s.audio_start_time, s.audio_end_time))
+                .collect(),
+            Err(e) => {
+                warn!("Could not read mic ranges for diarization masking: {e}");
+                Vec::new()
+            }
+        };
+
         let wav_pb = std::path::PathBuf::from(wav_path);
         let diar = match tokio::task::spawn_blocking(move || {
-            let engine = crate::diarization::engine::DiarizationEngine::new(&paths)?;
-            engine.run_on_file(&wav_pb)
+            // Live recordings auto-detect the speaker count; the manual
+            // head-count override is only offered on explicit re-diarization.
+            let engine = crate::diarization::engine::DiarizationEngine::new(&paths, None)?;
+            engine.run_on_file_excluding(&wav_pb, &mic_ranges)
         })
         .await
         {

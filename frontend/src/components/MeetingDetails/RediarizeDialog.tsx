@@ -61,6 +61,7 @@ export function RediarizeDialog({
   const [stage, setStage] = useState<DiarizationProgressPayload['status'] | null>(null);
   const [download, setDownload] = useState<ModelDownloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [numSpeakers, setNumSpeakers] = useState<string>('');
 
   const onCompleteRef = useRef(onComplete);
   const onOpenChangeRef = useRef(onOpenChange);
@@ -77,6 +78,7 @@ export function RediarizeDialog({
       setStage(null);
       setDownload(null);
       setError(null);
+      setNumSpeakers('');
     }
   }, [open]);
 
@@ -127,8 +129,16 @@ export function RediarizeDialog({
     setDownload(null);
 
     try {
-      await Analytics.track('rediarize_meeting_started', { meeting_id: meetingId });
-      const result = await invoke<RediarizationResult>('rediarize_meeting', { meetingId });
+      const parsed = parseInt(numSpeakers, 10);
+      const parsedNumSpeakers = Number.isFinite(parsed) && parsed >= 1 ? parsed : undefined;
+      await Analytics.track('rediarize_meeting_started', {
+        meeting_id: meetingId,
+        num_speakers: parsedNumSpeakers === undefined ? 'auto' : String(parsedNumSpeakers),
+      });
+      const result = await invoke<RediarizationResult>('rediarize_meeting', {
+        meetingId,
+        numSpeakers: parsedNumSpeakers,
+      });
       await Analytics.track('rediarize_meeting_completed', {
         meeting_id: meetingId,
         speakers: String(result.speakers),
@@ -195,9 +205,32 @@ export function RediarizeDialog({
 
         <div className="space-y-4 py-4">
           {!isProcessing && !error && (
-            <div className="text-sm text-muted-foreground">
-              First run downloads ~80&nbsp;MB of speaker models. Subsequent runs are
-              fast. Diarization runs locally — your audio never leaves the machine.
+            <div className="space-y-3">
+              <div className="text-sm text-muted-foreground">
+                First run downloads ~115&nbsp;MB of speaker models. Subsequent runs are
+                fast. Diarization runs locally — your audio never leaves the machine.
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="num-speakers" className="text-sm font-medium">
+                  Number of speakers{' '}
+                  <span className="font-normal text-muted-foreground">(optional)</span>
+                </label>
+                <input
+                  id="num-speakers"
+                  type="number"
+                  min={1}
+                  max={20}
+                  inputMode="numeric"
+                  placeholder="Auto-detect"
+                  value={numSpeakers}
+                  onChange={(e) => setNumSpeakers(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Leave blank to detect automatically. Set the exact count (e.g. 3) if
+                  auto-detect splits one person into several speakers.
+                </p>
+              </div>
             </div>
           )}
 

@@ -4,6 +4,13 @@
 // If no diarization segment overlaps by at least `MIN_OVERLAP_RATIO` of the
 // transcript segment's duration, we leave the existing `speaker` value alone
 // (which is the "mic"/"system" heuristic tag set during live transcription).
+//
+// The microphone stream is the local user ("You"). It is captured as a
+// dedicated source, so its tag is ground truth — never a guess. We therefore
+// NEVER reassign a `mic` segment to a clustered speaker; clustering only ever
+// splits the "them"/system audio into `speaker_1..N`.
+
+use std::collections::HashMap;
 
 use crate::audio::recording_saver::TranscriptSegment;
 use crate::diarization::engine::DiarSegment;
@@ -13,29 +20,55 @@ use crate::diarization::engine::DiarSegment;
 /// keep the existing mic/system tag rather than guess.
 const MIN_OVERLAP_RATIO: f64 = 0.20;
 
+/// Source tag for the local microphone stream — the user. Locked to "You" in
+/// the UI; diarization must never overwrite it.
+const MIC_SPEAKER: &str = "mic";
+
 pub fn assign_speakers(transcript: &mut [TranscriptSegment], diar: &[DiarSegment]) {
     if diar.is_empty() {
         return;
     }
-    for seg in transcript.iter_mut() {
-        let dur = (seg.audio_end_time - seg.audio_start_time).max(1e-6);
-        let mut best: Option<(f64, i32)> = None;
-        for d in diar {
-            let overlap =
-                (seg.audio_end_time.min(d.end) - seg.audio_start_time.max(d.start)).max(0.0);
-            if overlap <= 0.0 {
-                continue;
+
+    // Pass 1: for each eligible (non-mic) segment, resolve the dominant
+    // overlapping diarization cluster id, or `None` if it stays as-is (a mic
+    // segment, or a system segment with no overlap above the threshold).
+    let raw_ids: Vec<Option<i32>> = transcript
+        .iter()
+        .map(|seg| {
+            if seg.speaker == MIC_SPEAKER {
+                return None;
             }
-            match best {
-                Some((cur, _)) if cur >= overlap => {}
-                _ => best = Some((overlap, d.speaker)),
+            let dur = (seg.audio_end_time - seg.audio_start_time).max(1e-6);
+            let mut best: Option<(f64, i32)> = None;
+            for d in diar {
+                let overlap =
+                    (seg.audio_end_time.min(d.end) - seg.audio_start_time.max(d.start)).max(0.0);
+                if overlap <= 0.0 {
+                    continue;
+                }
+                match best {
+                    Some((cur, _)) if cur >= overlap => {}
+                    _ => best = Some((overlap, d.speaker)),
+                }
             }
-        }
-        if let Some((overlap, speaker)) = best {
-            if overlap / dur >= MIN_OVERLAP_RATIO {
-                seg.speaker = format!("speaker_{}", speaker + 1);
-            }
-        }
+            best.and_then(|(overlap, speaker)| (overlap / dur >= MIN_OVERLAP_RATIO).then_some(speaker))
+        })
+        .collect();
+
+    // Pass 2: remap the raw cluster ids that actually landed on a segment to
+    // contiguous `speaker_1..N` labels, ordered by first appearance, so the
+    // user sees gap-free numbering regardless of the clusterer's internal ids
+    // (which skip the cluster(s) that fell on masked-out mic audio).
+    let mut remap: HashMap<i32, usize> = HashMap::new();
+    let mut next: usize = 1;
+    for (seg, raw) in transcript.iter_mut().zip(raw_ids) {
+        let Some(id) = raw else { continue };
+        let label = *remap.entry(id).or_insert_with(|| {
+            let n = next;
+            next += 1;
+            n
+        });
+        seg.speaker = format!("speaker_{}", label);
     }
 }
 
@@ -72,18 +105,27 @@ mod tests {
     }
 
     #[test]
-    fn full_overlap_assigns_speaker() {
+    fn mic_is_never_reassigned_even_on_full_overlap() {
+        // The mic stream is the local user; clustering must never relabel it.
         let mut tx = vec![t(0.0, 2.0, "mic")];
+        assign_speakers(&mut tx, &[d(0.0, 2.0, 0)]);
+        assert_eq!(tx[0].speaker, "mic");
+    }
+
+    #[test]
+    fn system_full_overlap_assigns_speaker() {
+        let mut tx = vec![t(0.0, 2.0, "system")];
         assign_speakers(&mut tx, &[d(0.0, 2.0, 0)]);
         assert_eq!(tx[0].speaker, "speaker_1");
     }
 
     #[test]
     fn partial_overlap_above_threshold_assigns() {
-        let mut tx = vec![t(0.0, 2.0, "mic")];
-        // Diarization segment covers 1.0 of 2.0 = 50% > 20%.
+        let mut tx = vec![t(0.0, 2.0, "system")];
+        // Diarization segment covers 1.0 of 2.0 = 50% > 20%. Raw cluster id 3
+        // is the first (and only) assigned id, so it remaps to speaker_1.
         assign_speakers(&mut tx, &[d(0.5, 1.5, 3)]);
-        assert_eq!(tx[0].speaker, "speaker_4");
+        assert_eq!(tx[0].speaker, "speaker_1");
     }
 
     #[test]
@@ -96,17 +138,18 @@ mod tests {
 
     #[test]
     fn zero_overlap_keeps_existing() {
-        let mut tx = vec![t(0.0, 2.0, "mic")];
+        let mut tx = vec![t(0.0, 2.0, "system")];
         assign_speakers(&mut tx, &[d(5.0, 7.0, 1)]);
-        assert_eq!(tx[0].speaker, "mic");
+        assert_eq!(tx[0].speaker, "system");
     }
 
     #[test]
     fn picks_dominant_speaker_when_two_overlap() {
-        let mut tx = vec![t(0.0, 5.0, "mic")];
-        // speaker 0 covers 0..1 (1s); speaker 1 covers 1..5 (4s) — speaker 1 wins.
+        let mut tx = vec![t(0.0, 5.0, "system")];
+        // speaker 0 covers 0..1 (1s); speaker 1 covers 1..5 (4s) — speaker 1
+        // wins; as the only assigned cluster it remaps to speaker_1.
         assign_speakers(&mut tx, &[d(0.0, 1.0, 0), d(1.0, 5.0, 1)]);
-        assert_eq!(tx[0].speaker, "speaker_2");
+        assert_eq!(tx[0].speaker, "speaker_1");
     }
 
     #[test]
@@ -118,12 +161,31 @@ mod tests {
     }
 
     #[test]
-    fn first_max_wins_on_tie() {
-        let mut tx = vec![t(0.0, 4.0, "mic")];
-        // Both diarization segments overlap exactly 2.0 s; we accept whichever
-        // came first, which is well-defined and stable.
-        assign_speakers(&mut tx, &[d(0.0, 2.0, 7), d(2.0, 4.0, 9)]);
-        assert!(tx[0].speaker == "speaker_8" || tx[0].speaker == "speaker_10");
+    fn mic_preserved_while_system_is_diarized() {
+        let mut tx = vec![
+            t(0.0, 2.0, "mic"),
+            t(2.0, 4.0, "system"),
+            t(4.0, 6.0, "system"),
+        ];
+        // Clusters 3 and 8 land on the two system segments; mic is untouched.
+        assign_speakers(&mut tx, &[d(0.0, 2.0, 1), d(2.0, 4.0, 3), d(4.0, 6.0, 8)]);
+        assert_eq!(tx[0].speaker, "mic");
+        assert_eq!(tx[1].speaker, "speaker_1");
+        assert_eq!(tx[2].speaker, "speaker_2");
+    }
+
+    #[test]
+    fn numbering_is_contiguous_by_first_appearance() {
+        let mut tx = vec![
+            t(0.0, 1.0, "system"),
+            t(1.0, 2.0, "system"),
+            t(2.0, 3.0, "system"),
+        ];
+        // Raw cluster ids [5, 2, 5] → remap 5->1, 2->2 by first appearance.
+        assign_speakers(&mut tx, &[d(0.0, 1.0, 5), d(1.0, 2.0, 2), d(2.0, 3.0, 5)]);
+        assert_eq!(tx[0].speaker, "speaker_1");
+        assert_eq!(tx[1].speaker, "speaker_2");
+        assert_eq!(tx[2].speaker, "speaker_1");
     }
 
     #[test]

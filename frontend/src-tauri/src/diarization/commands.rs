@@ -89,9 +89,10 @@ pub async fn rediarize_meeting<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     meeting_id: String,
+    num_speakers: Option<u32>,
 ) -> Result<RediarizationResult, String> {
     let pool = state.db_manager.pool().clone();
-    let result = run_rediarization(app.clone(), &pool, &meeting_id).await;
+    let result = run_rediarization(app.clone(), &pool, &meeting_id, num_speakers).await;
 
     match result {
         Ok(r) => {
@@ -126,6 +127,7 @@ async fn run_rediarization<R: Runtime>(
     app: AppHandle<R>,
     pool: &sqlx::SqlitePool,
     meeting_id: &str,
+    num_speakers: Option<u32>,
 ) -> anyhow::Result<RediarizationResult> {
     let _ = app.emit(
         "diarization-progress",
@@ -157,27 +159,10 @@ async fn run_rediarization<R: Runtime>(
         .await
         .map_err(|e| anyhow!("Diarization models unavailable: {e}"))?;
 
-    let _ = app.emit(
-        "diarization-progress",
-        serde_json::json!({"status": "running", "meeting_id": meeting_id}),
-    );
-
-    let audio_for_blocking = audio_path.clone();
-    let diar = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let engine = DiarizationEngine::new(&paths)?;
-        engine.run_on_file(&audio_for_blocking)
-    })
-    .await
-    .map_err(|e| anyhow!("Diarization task panicked: {e}"))??;
-
-    let _ = app.emit(
-        "diarization-progress",
-        serde_json::json!({"status": "aligning", "meeting_id": meeting_id, "segments": diar.len()}),
-    );
-
-    // Load the existing transcripts to align against. We use
-    // `get_meeting_transcripts_paginated` with a large limit to avoid pulling
-    // the meeting body twice.
+    // Load the existing transcripts up front: we need the "mic"-tagged ranges
+    // to mask the local user out of clustering, plus the rows themselves to
+    // align against afterwards. `get_meeting_transcripts_paginated` with a
+    // large limit avoids pulling the meeting body twice.
     let (rows, _total) =
         MeetingsRepository::get_meeting_transcripts_paginated(pool, meeting_id, 100_000, 0)
             .await
@@ -186,6 +171,34 @@ async fn run_rediarization<R: Runtime>(
         "Re-diarization for {}: {} transcript rows loaded",
         meeting_id,
         rows.len()
+    );
+
+    // Silence local mic regions before clustering so we only diarize "them".
+    // The mic tag survives diarization (the aligner never overwrites it), so it
+    // is still present even when re-diarizing an already-diarized meeting.
+    let mic_ranges: Vec<(f64, f64)> = rows
+        .iter()
+        .filter(|r| r.speaker.as_deref() == Some("mic"))
+        .filter_map(|r| Some((r.audio_start_time?, r.audio_end_time?)))
+        .collect();
+
+    let _ = app.emit(
+        "diarization-progress",
+        serde_json::json!({"status": "running", "meeting_id": meeting_id}),
+    );
+
+    let audio_for_blocking = audio_path.clone();
+    let forced_clusters = num_speakers.map(|n| n as i32);
+    let diar = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let engine = DiarizationEngine::new(&paths, forced_clusters)?;
+        engine.run_on_file_excluding(&audio_for_blocking, &mic_ranges)
+    })
+    .await
+    .map_err(|e| anyhow!("Diarization task panicked: {e}"))??;
+
+    let _ = app.emit(
+        "diarization-progress",
+        serde_json::json!({"status": "aligning", "meeting_id": meeting_id, "segments": diar.len()}),
     );
 
     // Build aligner shims. Only audio_start_time / audio_end_time / speaker

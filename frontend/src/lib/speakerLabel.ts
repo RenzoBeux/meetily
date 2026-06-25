@@ -2,10 +2,11 @@
  * Map a source-faithful speaker tag (as written by the audio pipeline) to a
  * user-facing label and a Tailwind class for tinting it.
  *
- * Today the pipeline emits "mic" or "system" based on which audio stream
- * produced the speech segment. Diarization will later overwrite this with
- * per-speaker IDs (e.g. "speaker_1") which fall through to the default branch
- * and render as-is.
+ * The pipeline emits "mic" or "system" based on which audio stream produced the
+ * speech segment. The mic stream is the local user and stays anchored to "You";
+ * diarization only ever splits the system/"them" audio into per-speaker IDs
+ * (e.g. "speaker_1"), which we render as "Speaker 1". Any other custom label
+ * (e.g. a name the user typed) renders as-is.
  */
 export interface SpeakerLabel {
   label: string;
@@ -19,7 +20,14 @@ export function formatSpeaker(tag: string | undefined | null): SpeakerLabel | nu
       return { label: 'You', className: 'bg-blue-100 text-blue-700' };
     case 'system':
       return { label: 'Others', className: 'bg-purple-100 text-purple-700' };
-    default:
+    default: {
+      // Diarized remote speakers arrive as "speaker_1", "speaker_2", … →
+      // "Speaker 1", etc. Anything else is a user-supplied label, shown as-is.
+      const match = /^speaker_(\d+)$/.exec(tag);
+      if (match) {
+        return { label: `Speaker ${match[1]}`, className: 'bg-amber-100 text-amber-700' };
+      }
       return { label: tag, className: 'bg-gray-100 text-gray-700' };
+    }
   }
 }

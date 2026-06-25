@@ -38,7 +38,11 @@ pub fn detect_gpu() -> bool {
 }
 
 impl DiarizationEngine {
-    pub fn new(paths: &DiarizationModelPaths) -> Result<Self> {
+    /// `num_speakers`: when `Some(n)` with `n >= 1`, forces exactly `n` speaker
+    /// clusters — the most reliable cure for over-/under-segmentation when the
+    /// caller knows the head-count. When `None` (or `< 1`), the speaker count is
+    /// inferred automatically via the clustering threshold.
+    pub fn new(paths: &DiarizationModelPaths, num_speakers: Option<i32>) -> Result<Self> {
         let provider = provider_str();
         info!(
             "Initialising speaker diarization (provider={}, segmentation={}, embedding={})",
@@ -52,6 +56,15 @@ impl DiarizationEngine {
         // sensible default rather than the crate default (1) since diarization
         // happens after recording stops and can use the box.
         let num_threads = std::cmp::max(2, num_cpus_like()) as i32;
+
+        // A supplied head-count forces exactly that many clusters (threshold
+        // ignored); otherwise auto-detect with -1.
+        let num_clusters = num_speakers.filter(|n| *n >= 1).unwrap_or(-1);
+        if num_clusters >= 1 {
+            info!("Diarization clustering: forced num_speakers={num_clusters}");
+        } else {
+            info!("Diarization clustering: auto (threshold=0.7)");
+        }
 
         let config = OfflineSpeakerDiarizationConfig {
             segmentation: OfflineSpeakerSegmentationModelConfig {
@@ -69,12 +82,12 @@ impl DiarizationEngine {
                 provider: Some(provider.to_string()),
             },
             clustering: FastClusteringConfig {
-                // num_clusters = -1 means "auto" — let the threshold decide.
-                num_clusters: -1,
-                // sherpa-onnx's default is 0.5, but on real-world meetings that
-                // over-segments dramatically (200+ "speakers" reported on a
-                // single recording). 0.7 is the documented production value
-                // for AHC clustering with 3D-Speaker / wespeaker embeddings.
+                // -1 = auto (threshold decides); >= 1 = forced head-count.
+                num_clusters,
+                // HIGHER threshold merges more → FEWER speakers. sherpa-onnx's
+                // default (0.5) over-segments real meetings (200+ "speakers");
+                // 0.7 is the production value for AHC with wespeaker / 3D-Speaker
+                // embeddings. Ignored when num_clusters >= 1.
                 threshold: 0.7,
             },
             // Slightly more lenient minimums so a hesitant speaker doesn't get
@@ -105,6 +118,25 @@ impl DiarizationEngine {
     /// model's expected sample rate (16 kHz for pyannote-3.0), then runs the
     /// pipeline and returns timestamped segments.
     pub fn run_on_file(&self, wav_path: &std::path::Path) -> Result<Vec<DiarSegment>> {
+        self.run_on_file_excluding(wav_path, &[])
+    }
+
+    /// Like [`run_on_file`](Self::run_on_file) but zeroes out the given time
+    /// ranges (in seconds) before clustering. We use this to silence the local
+    /// microphone ("you") regions so the clusterer only ever sees the
+    /// remote/"them" audio — that is what makes diarization split *them* into
+    /// `speaker_1..N` while the mic stream stays anchored to "You" in the
+    /// aligner.
+    ///
+    /// Tradeoff: during cross-talk (you and a remote speaker talking at once),
+    /// masking the mic window also silences the overlapping remote speech in
+    /// that window. That is acceptable — cross-talk clusters unreliably anyway,
+    /// and the mic segment is still kept as "You" downstream.
+    pub fn run_on_file_excluding(
+        &self,
+        wav_path: &std::path::Path,
+        exclude_ranges: &[(f64, f64)],
+    ) -> Result<Vec<DiarSegment>> {
         let decoded = decode_audio_file(wav_path)
             .map_err(|e| anyhow!("Failed to decode audio for diarization: {e}"))?;
         info!(
@@ -115,7 +147,7 @@ impl DiarizationEngine {
             decoded.duration_seconds
         );
         // `to_whisper_format` already does mono + 16 kHz f32 in [-1, 1].
-        let samples = decoded.to_whisper_format();
+        let mut samples = decoded.to_whisper_format();
         if samples.is_empty() {
             warn!("Diarization input is empty — returning no segments");
             return Ok(Vec::new());
@@ -125,6 +157,26 @@ impl DiarizationEngine {
                 "Diarization model expects {} Hz but pipeline produced 16 kHz",
                 self.sample_rate
             ));
+        }
+        if !exclude_ranges.is_empty() {
+            let total = samples.len() as i64;
+            let mut masked_samples: usize = 0;
+            for &(start, end) in exclude_ranges {
+                if end <= start {
+                    continue;
+                }
+                let from = ((start * 16_000.0).floor() as i64).clamp(0, total) as usize;
+                let to = ((end * 16_000.0).ceil() as i64).clamp(0, total) as usize;
+                if to > from {
+                    samples[from..to].iter_mut().for_each(|s| *s = 0.0);
+                    masked_samples += to - from;
+                }
+            }
+            info!(
+                "Masked {:.2}s of mic audio across {} range(s) before clustering",
+                masked_samples as f64 / 16_000.0,
+                exclude_ranges.len()
+            );
         }
         let result = self
             .inner
