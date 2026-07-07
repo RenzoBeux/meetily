@@ -125,10 +125,10 @@ Build from source following our detailed guides:
 **Quick start:**
 
 ```bash
-git clone https://github.com/Zackriya-Solutions/meeting-minutes
-cd meeting-minutes/frontend
+git clone https://github.com/RenzoBeux/meetily
+cd meetily/frontend
 pnpm install
-./build-gpu.sh
+./clean_build.sh              # macOS/Linux — on Windows: clean_build_windows.bat
 ```
 
 ## Key Features in Action
