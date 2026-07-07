@@ -8,6 +8,10 @@ anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 llama-cpp-2 = "=0.1.146"
+# Pin the -sys crate to the exact version llama-cpp-2 0.1.146 expects. Without
+# this, a fresh resolve (this fork does not commit Cargo.lock) pulls a newer
+# llama-cpp-sys-2 whose bindgen symbols no longer match, breaking the build.
+llama-cpp-sys-2 = "=0.1.146"
 encoding_rs = "0.8"
 
 [features]
