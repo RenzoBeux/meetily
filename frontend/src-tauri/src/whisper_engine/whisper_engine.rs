@@ -399,20 +399,62 @@ impl WhisperEngine {
     }
 
     // Check for obviously meaningless patterns
+    // These are well-known Whisper hallucinations triggered by silence or non-speech audio,
+    // a result of YouTube-heavy training data leaking through on near-silent input.
     fn is_meaningless_output(text: &str) -> bool {
         let text_lower = text.to_lowercase();
 
-        // Check for common meaningless patterns
         let meaningless_patterns = [
+            // English
             "thank you for watching",
             "thanks for watching",
+            "thanks for watching!",
             "like and subscribe",
+            "subscribe to the channel",
+            "don't forget to subscribe",
+            "see you next time",
+            "see you in the next video",
             "music playing",
             "applause",
             "laughter",
+            "[music]",
+            "(music)",
             "um um um",
             "uh uh uh",
             "ah ah ah",
+            // Spanish
+            "gracias por ver el video",
+            "gracias por ver el vídeo",
+            "gracias por ver",
+            "gracias por su atención",
+            "subtítulos por la comunidad",
+            "subtítulos realizados por la comunidad de amara.org",
+            "subtitulado por la comunidad",
+            "subtítulos creados por la comunidad",
+            "subtítulos en español",
+            "más información en",
+            // Portuguese
+            "obrigado por assistir",
+            "obrigado por ver",
+            "legendas pela comunidade",
+            // French
+            "merci d'avoir regardé",
+            "merci d'avoir regardé cette vidéo",
+            "sous-titres réalisés par la communauté d'amara.org",
+            "à la prochaine",
+            // German
+            "danke fürs zuschauen",
+            "vielen dank fürs zuschauen",
+            "untertitel von",
+            "untertitelung des zdf",
+            // Italian
+            "grazie per aver guardato",
+            "grazie per la visione",
+            "sottotitoli e revisione",
+            // Generic credits
+            "transcription by",
+            "subtitles by",
+            "captions by",
         ];
 
         for pattern in &meaningless_patterns {
@@ -540,6 +582,14 @@ impl WhisperEngine {
         params.set_language(language_code);
         params.set_translate(should_translate);
 
+        // Steer Whisper away from YouTube-style hallucinations ("thanks for watching",
+        // "gracias por ver el video", "like and subscribe"). Whisper's LM is heavily
+        // primed by YouTube subtitle training data, and a neutral meeting-context prompt
+        // shifts its priors. Also disable cross-chunk context to prevent a single
+        // hallucination from cascading into subsequent segments.
+        params.set_initial_prompt("The following is a transcript of a meeting conversation.");
+        params.set_no_context(true);
+
         // CRITICAL: Disable timestamp tokens to prevent whisper.cpp chunking heuristics
         // The "single timestamp ending - skip entire chunk" optimization incorrectly discards
         // complete, valid transcriptions. Disabling timestamps forces whisper to return ALL text.
@@ -656,6 +706,14 @@ impl WhisperEngine {
         };
         params.set_language(language_code);
         params.set_translate(should_translate);
+
+        // Steer Whisper away from YouTube-style hallucinations ("thanks for watching",
+        // "gracias por ver el video", "like and subscribe"). Whisper's LM is heavily
+        // primed by YouTube subtitle training data, and a neutral meeting-context prompt
+        // shifts its priors. Also disable cross-chunk context to prevent a single
+        // hallucination from cascading into subsequent segments.
+        params.set_initial_prompt("The following is a transcript of a meeting conversation.");
+        params.set_no_context(true);
 
         // CRITICAL: Disable timestamp tokens to prevent whisper.cpp chunking heuristics
         // The "single timestamp ending - skip entire chunk" optimization incorrectly discards

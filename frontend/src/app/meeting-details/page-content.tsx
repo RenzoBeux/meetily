@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Summary, SummaryResponse } from '@/types';
+import { Summary, SummaryResponse, Transcript } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
@@ -36,6 +36,7 @@ export default function PageContent({
   totalCount,
   loadedCount,
   onLoadMore,
+  applyLocalMutation,
 }: {
   meeting: any;
   summaryData: Summary | null;
@@ -50,6 +51,7 @@ export default function PageContent({
   totalCount?: number;
   loadedCount?: number;
   onLoadMore?: () => void;
+  applyLocalMutation?: (mutator: (prev: Transcript[]) => Transcript[]) => void;
 }) {
   console.log('📄 PAGE CONTENT: Initializing with data:', {
     meetingId: meeting.id,
@@ -101,6 +103,7 @@ export default function PageContent({
         whisperModel: config.whisperModel,
         apiKey: config.apiKey ?? null,
         ollamaEndpoint: config.ollamaEndpoint ?? null,
+        lmStudioEndpoint: config.lmStudioEndpoint ?? null,
       });
 
       // Emit event so ConfigContext and other listeners stay in sync
@@ -204,6 +207,7 @@ export default function PageContent({
           meetingId={meeting.id}
           meetingFolderPath={meeting.folder_path}
           onRefetchTranscripts={onRefetchTranscripts}
+          applyLocalMutation={applyLocalMutation}
         />
         <Tabs defaultValue="summary" className="flex-1 min-w-0 flex flex-col bg-white overflow-hidden">
           <div className="flex items-center justify-center border-b border-gray-200 px-4 py-2">

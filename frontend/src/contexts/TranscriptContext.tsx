@@ -358,6 +358,68 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     };
   }, [currentMeetingId]); // Add currentMeetingId dependency
 
+  // Listen for post-recording diarization. The backend rewrites the saved
+  // transcripts.json with speaker_N tags and emits the updated full segment
+  // list; we merge the new `speaker` field onto our in-memory transcripts by
+  // sequence_id so the UI flips from "You / Others" to "Speaker 1 / Speaker 2"
+  // without re-fetching anything.
+  useEffect(() => {
+    let unlistenRediar: (() => void) | undefined;
+    let unlistenProgress: (() => void) | undefined;
+    (async () => {
+      try {
+        unlistenProgress = await transcriptService.onDiarizationProgress((payload) => {
+          // Past-meeting re-diarization events carry a `meeting_id`; the
+          // RediarizeDialog handles its own UI for those, so suppress the
+          // global toast here.
+          if ((payload as { meeting_id?: string }).meeting_id) return;
+          if (payload.status === 'starting') {
+            toast.info('Identifying speakers…', { id: 'diarization', duration: 60000 });
+          } else if (payload.status === 'running' || payload.status === 'aligning') {
+            toast.info(
+              payload.status === 'running'
+                ? 'Identifying speakers…'
+                : 'Applying speaker labels…',
+              { id: 'diarization', duration: 60000 },
+            );
+          } else if (payload.status === 'done') {
+            toast.success(
+              `Identified ${payload.speakers ?? 0} speaker${payload.speakers === 1 ? '' : 's'}`,
+              { id: 'diarization' },
+            );
+          } else if (payload.status === 'skipped' || payload.status === 'error') {
+            toast.error(`Speaker identification ${payload.status}: ${payload.reason ?? 'unknown'}`,
+              { id: 'diarization' });
+          }
+        });
+
+        unlistenRediar = await transcriptService.onTranscriptRediarized((segments) => {
+          if (!Array.isArray(segments) || segments.length === 0) return;
+          // Build a map of sequence_id -> diarized speaker.
+          const speakerBySeq = new Map<number, string>();
+          for (const s of segments) {
+            if (typeof s.sequence_id === 'number' && typeof s.speaker === 'string') {
+              speakerBySeq.set(s.sequence_id, s.speaker);
+            }
+          }
+          setTranscripts((prev) =>
+            prev.map((t) => {
+              if (typeof t.sequence_id !== 'number') return t;
+              const next = speakerBySeq.get(t.sequence_id);
+              return next && next !== t.speaker ? { ...t, speaker: next } : t;
+            }),
+          );
+        });
+      } catch (err) {
+        console.error('Failed to set up diarization listeners:', err);
+      }
+    })();
+    return () => {
+      unlistenRediar?.();
+      unlistenProgress?.();
+    };
+  }, []);
+
   // Sync transcript history and meeting name from backend on reload
   // This fixes the issue where reloading during active recording causes state desync
   useEffect(() => {

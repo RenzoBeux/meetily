@@ -25,6 +25,13 @@ interface UsePaginatedTranscriptsReturn {
     loadMore: () => Promise<void>;
     reset: () => void;
     refetch: () => Promise<void>;
+    /**
+     * Apply an in-memory mutation to the loaded transcripts without re-fetching.
+     * Used by the editor for optimistic updates after successful Tauri writes.
+     * Also bumps totalCount to keep pagination metadata consistent when rows
+     * are added or removed locally.
+     */
+    applyLocalMutation: (mutator: (prev: Transcript[]) => Transcript[]) => void;
 }
 
 /**
@@ -199,6 +206,18 @@ export function usePaginatedTranscripts({
         [transcripts]
     );
 
+    const applyLocalMutation = useCallback(
+        (mutator: (prev: Transcript[]) => Transcript[]) => {
+            setTranscripts(prev => {
+                const next = mutator(prev);
+                setTotalCount(count => count + (next.length - prev.length));
+                offsetRef.current = next.length;
+                return next;
+            });
+        },
+        [],
+    );
+
     return {
         metadata,
         segments,
@@ -212,5 +231,6 @@ export function usePaginatedTranscripts({
         loadMore,
         reset,
         refetch,
+        applyLocalMutation,
     };
 }

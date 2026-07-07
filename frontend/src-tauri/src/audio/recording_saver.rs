@@ -240,7 +240,9 @@ impl RecordingSaver {
 
         // Only initialize incremental saver if checkpoints are needed (auto_save is true)
         if create_checkpoints {
-            let incremental_saver = IncrementalAudioSaver::new(meeting_folder.clone(), 48000)?;
+            // Stereo: the pipeline sends interleaved Left = mic, Right = system so the
+            // "me vs them" split is preserved on disk and survives any re-process.
+            let incremental_saver = IncrementalAudioSaver::new(meeting_folder.clone(), 48000, 2)?;
             self.incremental_saver = Some(Arc::new(AsyncMutex::new(incremental_saver)));
             info!("✅ Incremental audio saver initialized for meeting: {}", meeting_name);
         } else {
@@ -474,6 +476,23 @@ impl RecordingSaver {
         } else {
             Vec::new()
         }
+    }
+
+    /// Shared handle to the in-memory transcript-segment buffer. Diarization
+    /// uses this to mutate the `speaker` field after the WAV is on disk.
+    pub fn transcript_segments_handle(&self) -> Arc<Mutex<Vec<TranscriptSegment>>> {
+        self.transcript_segments.clone()
+    }
+
+    /// Re-serialise transcripts.json from the current in-memory segments.
+    /// Called by the diarization post-processor after it rewrites speaker tags.
+    pub fn rewrite_transcripts_now(&self) -> Result<()> {
+        let folder = self
+            .meeting_folder
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Cannot rewrite transcripts: meeting folder not set"))?
+            .clone();
+        self.write_transcripts_json(&folder)
     }
 
     /// Get meeting name (for reload sync)

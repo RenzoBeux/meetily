@@ -23,6 +23,14 @@ pub struct RecordingPreferences {
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub system_audio_backend: Option<String>,
+    /// Run sherpa-onnx speaker diarization on the saved WAV after stop.
+    /// Default true (matching v1 product decision); first run downloads ~80 MB.
+    #[serde(default = "default_true")]
+    pub diarization_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for RecordingPreferences {
@@ -35,6 +43,7 @@ impl Default for RecordingPreferences {
             preferred_system_device: None,
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
+            diarization_enabled: true,
         }
     }
 }

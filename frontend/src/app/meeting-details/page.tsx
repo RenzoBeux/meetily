@@ -45,6 +45,7 @@ function MeetingDetailsContent() {
     loadedCount,
     loadMore,
     refetch,
+    applyLocalMutation,
     error: transcriptError,
   } = usePaginatedTranscripts({ meetingId: meetingId || '' });
 
@@ -377,6 +378,7 @@ function MeetingDetailsContent() {
     totalCount={totalCount}
     loadedCount={loadedCount}
     onLoadMore={loadMore}
+    applyLocalMutation={applyLocalMutation}
   />;
 }
 

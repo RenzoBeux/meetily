@@ -1,9 +1,23 @@
 use crate::api::{TranscriptSearchResult, TranscriptSegment};
 use chrono::Utc;
 use sqlx::{Connection, Error as SqlxError, SqlitePool};
-use std::collections::HashMap;
 use tracing::{error, info};
 use uuid::Uuid;
+
+/// Row payload for inserting the tail half of a segment after a split.
+/// The caller computes timestamps; this struct just transports them to the
+/// repo so the SQL stays in one place.
+#[derive(Debug, Clone)]
+pub struct NewSegmentRow {
+    pub id: String,
+    pub meeting_id: String,
+    pub text: String,
+    pub timestamp: String,
+    pub audio_start_time: Option<f64>,
+    pub audio_end_time: Option<f64>,
+    pub duration: Option<f64>,
+    pub speaker: Option<String>,
+}
 
 pub struct TranscriptsRepository;
 
@@ -84,71 +98,282 @@ impl TranscriptsRepository {
         Ok(meeting_id)
     }
 
-    /// Bulk-update the speaker tag for a set of transcript IDs.
-    /// Used after diarization to overwrite the source-faithful tags
-    /// ("mic"/"system") with per-speaker IDs.
+    /// Bulk-update the `speaker` column for a set of transcript rows by id.
+    /// All updates run in a single transaction so a failure mid-write rolls
+    /// back cleanly. Used by post-recording diarization (re-runs on past
+    /// meetings) — typical batch size is one row per transcript segment, so
+    /// per-row UPDATE is fine.
     pub async fn update_speakers(
         pool: &SqlitePool,
-        speaker_map: &HashMap<String, String>,
-    ) -> Result<u64, SqlxError> {
-        if speaker_map.is_empty() {
+        updates: &[(String, Option<String>)],
+    ) -> Result<usize, SqlxError> {
+        if updates.is_empty() {
             return Ok(0);
         }
 
         let mut conn = pool.acquire().await?;
         let mut transaction = conn.begin().await?;
-        let mut updated: u64 = 0;
 
-        for (transcript_id, speaker) in speaker_map {
+        let mut affected: usize = 0;
+        for (id, speaker) in updates {
             let result = sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ?")
                 .bind(speaker)
-                .bind(transcript_id)
+                .bind(id)
                 .execute(&mut *transaction)
-                .await?;
-            updated += result.rows_affected();
+                .await;
+
+            match result {
+                Ok(res) => affected += res.rows_affected() as usize,
+                Err(e) => {
+                    error!("Failed to update speaker for transcript {}: {}", id, e);
+                    transaction.rollback().await?;
+                    return Err(e);
+                }
+            }
         }
 
         transaction.commit().await?;
-        info!("Updated speaker tags on {} transcripts", updated);
-        Ok(updated)
+        info!(
+            "Updated speaker on {} of {} transcript rows",
+            affected,
+            updates.len()
+        );
+        Ok(affected)
     }
 
-    /// Update the speaker tag on a single transcript segment. Used when the
-    /// user manually reassigns one chunk to a different speaker.
-    pub async fn update_speaker_for_transcript(
+    /// Update the `transcript` (text) column for a single segment.
+    /// Returns true if a row matched the id.
+    pub async fn update_segment_text(
         pool: &SqlitePool,
-        transcript_id: &str,
-        speaker: &str,
+        segment_id: &str,
+        new_text: &str,
     ) -> Result<bool, SqlxError> {
-        let result = sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ?")
-            .bind(speaker)
-            .bind(transcript_id)
+        let result = sqlx::query("UPDATE transcripts SET transcript = ? WHERE id = ?")
+            .bind(new_text)
+            .bind(segment_id)
             .execute(pool)
             .await?;
         Ok(result.rows_affected() > 0)
     }
 
-    /// Rename a speaker across all transcripts in a meeting. Used when the
-    /// user gives a real name to a diarization-assigned ID like "speaker_1".
-    pub async fn rename_speaker_in_meeting(
+    /// Bulk-delete transcript rows by id in a single transaction.
+    /// Returns the number of rows actually removed.
+    pub async fn delete_segments(
         pool: &SqlitePool,
-        meeting_id: &str,
-        old_speaker: &str,
-        new_speaker: &str,
-    ) -> Result<u64, SqlxError> {
-        let result = sqlx::query(
-            "UPDATE transcripts SET speaker = ? WHERE meeting_id = ? AND speaker = ?",
+        segment_ids: &[String],
+    ) -> Result<usize, SqlxError> {
+        if segment_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = pool.acquire().await?;
+        let mut transaction = conn.begin().await?;
+
+        let mut affected: usize = 0;
+        for id in segment_ids {
+            let result = sqlx::query("DELETE FROM transcripts WHERE id = ?")
+                .bind(id)
+                .execute(&mut *transaction)
+                .await;
+
+            match result {
+                Ok(res) => affected += res.rows_affected() as usize,
+                Err(e) => {
+                    error!("Failed to delete transcript {}: {}", id, e);
+                    transaction.rollback().await?;
+                    return Err(e);
+                }
+            }
+        }
+
+        transaction.commit().await?;
+        info!(
+            "Deleted {} of {} transcript rows",
+            affected,
+            segment_ids.len()
+        );
+        Ok(affected)
+    }
+
+    /// Merge: keep one segment row (update its text/end/duration/speaker) and
+    /// delete the others, all atomically. The caller computes the merged
+    /// values from the source rows.
+    pub async fn merge_segments(
+        pool: &SqlitePool,
+        keeper_id: &str,
+        merged_text: &str,
+        audio_end_time: f64,
+        duration: f64,
+        speaker: Option<&str>,
+        deleted_ids: &[String],
+    ) -> Result<(), SqlxError> {
+        let mut conn = pool.acquire().await?;
+        let mut transaction = conn.begin().await?;
+
+        let update = sqlx::query(
+            "UPDATE transcripts
+             SET transcript = ?, audio_end_time = ?, duration = ?, speaker = ?
+             WHERE id = ?",
         )
-        .bind(new_speaker)
-        .bind(meeting_id)
-        .bind(old_speaker)
+        .bind(merged_text)
+        .bind(audio_end_time)
+        .bind(duration)
+        .bind(speaker)
+        .bind(keeper_id)
+        .execute(&mut *transaction)
+        .await;
+
+        if let Err(e) = update {
+            error!("Failed to update merge keeper {}: {}", keeper_id, e);
+            transaction.rollback().await?;
+            return Err(e);
+        }
+
+        for id in deleted_ids {
+            let result = sqlx::query("DELETE FROM transcripts WHERE id = ?")
+                .bind(id)
+                .execute(&mut *transaction)
+                .await;
+            if let Err(e) = result {
+                error!("Failed to delete merge source {}: {}", id, e);
+                transaction.rollback().await?;
+                return Err(e);
+            }
+        }
+
+        transaction.commit().await?;
+        info!(
+            "Merged {} rows into keeper {}",
+            deleted_ids.len() + 1,
+            keeper_id
+        );
+        Ok(())
+    }
+
+    /// Split: update the source row to hold only the head, then insert a new
+    /// row for the tail. The caller computes interpolated timestamps.
+    pub async fn split_segment(
+        pool: &SqlitePool,
+        source_id: &str,
+        head_text: &str,
+        head_end_time: f64,
+        head_duration: f64,
+        tail: &NewSegmentRow,
+    ) -> Result<(), SqlxError> {
+        let mut conn = pool.acquire().await?;
+        let mut transaction = conn.begin().await?;
+
+        let update = sqlx::query(
+            "UPDATE transcripts
+             SET transcript = ?, audio_end_time = ?, duration = ?
+             WHERE id = ?",
+        )
+        .bind(head_text)
+        .bind(head_end_time)
+        .bind(head_duration)
+        .bind(source_id)
+        .execute(&mut *transaction)
+        .await;
+
+        if let Err(e) = update {
+            error!("Failed to update split source {}: {}", source_id, e);
+            transaction.rollback().await?;
+            return Err(e);
+        }
+
+        let insert = sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&tail.id)
+        .bind(&tail.meeting_id)
+        .bind(&tail.text)
+        .bind(&tail.timestamp)
+        .bind(tail.audio_start_time)
+        .bind(tail.audio_end_time)
+        .bind(tail.duration)
+        .bind(&tail.speaker)
+        .execute(&mut *transaction)
+        .await;
+
+        if let Err(e) = insert {
+            error!("Failed to insert split tail for source {}: {}", source_id, e);
+            transaction.rollback().await?;
+            return Err(e);
+        }
+
+        transaction.commit().await?;
+        info!("Split segment {} into head + tail {}", source_id, tail.id);
+        Ok(())
+    }
+
+    /// Bulk insert transcript rows with explicit ids. Used by undo to restore
+    /// segments previously deleted or merged away. Idempotent against
+    /// already-present rows via INSERT OR IGNORE.
+    pub async fn bulk_insert_segments(
+        pool: &SqlitePool,
+        rows: &[NewSegmentRow],
+    ) -> Result<usize, SqlxError> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = pool.acquire().await?;
+        let mut transaction = conn.begin().await?;
+
+        let mut affected: usize = 0;
+        for row in rows {
+            let result = sqlx::query(
+                "INSERT OR IGNORE INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&row.id)
+            .bind(&row.meeting_id)
+            .bind(&row.text)
+            .bind(&row.timestamp)
+            .bind(row.audio_start_time)
+            .bind(row.audio_end_time)
+            .bind(row.duration)
+            .bind(&row.speaker)
+            .execute(&mut *transaction)
+            .await;
+
+            match result {
+                Ok(res) => affected += res.rows_affected() as usize,
+                Err(e) => {
+                    error!("Failed to insert segment {}: {}", row.id, e);
+                    transaction.rollback().await?;
+                    return Err(e);
+                }
+            }
+        }
+
+        transaction.commit().await?;
+        info!("Inserted {} of {} segments", affected, rows.len());
+        Ok(affected)
+    }
+
+    /// Update text + audio bounds + duration on a single segment.
+    /// Used by undo of `split` to restore the source row's pre-split state.
+    pub async fn update_segment_bounds(
+        pool: &SqlitePool,
+        segment_id: &str,
+        new_text: &str,
+        audio_end_time: f64,
+        duration: f64,
+    ) -> Result<bool, SqlxError> {
+        let result = sqlx::query(
+            "UPDATE transcripts
+             SET transcript = ?, audio_end_time = ?, duration = ?
+             WHERE id = ?",
+        )
+        .bind(new_text)
+        .bind(audio_end_time)
+        .bind(duration)
+        .bind(segment_id)
         .execute(pool)
         .await?;
-        info!(
-            "Renamed speaker '{}' -> '{}' on {} transcripts in meeting {}",
-            old_speaker, new_speaker, result.rows_affected(), meeting_id
-        );
-        Ok(result.rows_affected())
+        Ok(result.rows_affected() > 0)
     }
 
     /// Searches for a query string within the transcripts.

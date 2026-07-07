@@ -3,11 +3,11 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, FolderOpen, RefreshCw, Download, Users } from 'lucide-react';
+import { Copy, FolderOpen, RefreshCw, Download, Users, Pencil, Check, Undo2, Redo2 } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
+import { RediarizeDialog } from './RediarizeDialog';
 import { ExportMarkdownDialog } from './ExportMarkdownDialog';
-import { DiarizeDialog } from './DiarizeDialog';
 import { ExportScope } from '@/hooks/meeting-details/useExportOperations';
 import { useConfig } from '@/contexts/ConfigContext';
 
@@ -21,6 +21,15 @@ interface TranscriptButtonGroupProps {
   meetingId?: string;
   meetingFolderPath?: string | null;
   onRefetchTranscripts?: () => Promise<void>;
+  // Edit-mode controls (only present on saved meetings)
+  isEditMode?: boolean;
+  onEnterEditMode?: () => void;
+  onExitEditMode?: () => void;
+  isRecording?: boolean;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
 }
 
 
@@ -33,11 +42,19 @@ export function TranscriptButtonGroup({
   meetingId,
   meetingFolderPath,
   onRefetchTranscripts,
+  isEditMode = false,
+  onEnterEditMode,
+  onExitEditMode,
+  isRecording = false,
+  canUndo = false,
+  canRedo = false,
+  onUndo,
+  onRedo,
 }: TranscriptButtonGroupProps) {
   const { betaFeatures } = useConfig();
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
+  const [showRediarizeDialog, setShowRediarizeDialog] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
-  const [showDiarizeDialog, setShowDiarizeDialog] = useState(false);
 
   const handleRetranscribeComplete = useCallback(async () => {
     if (onRefetchTranscripts) {
@@ -45,14 +62,14 @@ export function TranscriptButtonGroup({
     }
   }, [onRefetchTranscripts]);
 
-  const handleDiarizeComplete = useCallback(async () => {
+  const handleRediarizeComplete = useCallback(async () => {
     if (onRefetchTranscripts) {
       await onRefetchTranscripts();
     }
   }, [onRefetchTranscripts]);
 
   return (
-    <div className="flex items-center justify-center w-full gap-2">
+    <div className="flex items-center justify-center w-full gap-2 min-w-0 overflow-x-auto">
       <ButtonGroup>
         <Button
           variant="outline"
@@ -65,7 +82,7 @@ export function TranscriptButtonGroup({
           title={transcriptCount === 0 ? 'No transcript available' : 'Copy Transcript'}
         >
           <Copy />
-          <span className="hidden lg:inline">Copy</span>
+          <span className="hidden @lg:inline">Copy</span>
         </Button>
 
         <Button
@@ -79,49 +96,105 @@ export function TranscriptButtonGroup({
           title={transcriptCount === 0 && !hasSummary ? 'Nothing to export yet' : 'Export to Markdown'}
         >
           <Download />
-          <span className="hidden lg:inline">Export</span>
+          <span className="hidden @lg:inline">Export</span>
         </Button>
 
         <Button
           size="sm"
           variant="outline"
-          className="xl:px-4"
+          className="@xl:px-4"
           onClick={() => {
             Analytics.trackButtonClick('open_recording_folder', 'meeting_details');
             onOpenMeetingFolder();
           }}
           title="Open Recording Folder"
         >
-          <FolderOpen className="xl:mr-2" size={18} />
-          <span className="hidden lg:inline">Recording</span>
+          <FolderOpen className="@xl:mr-2" size={18} />
+          <span className="hidden @lg:inline">Recording</span>
         </Button>
 
         {betaFeatures.importAndRetranscribe && meetingId && meetingFolderPath && (
           <Button
             size="sm"
             variant="outline"
-            className="bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 border-blue-200 xl:px-4"
+            className="bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 border-blue-200 @xl:px-4"
             onClick={() => {
               Analytics.trackButtonClick('enhance_transcript', 'meeting_details');
               setShowRetranscribeDialog(true);
             }}
             title="Retranscribe to enhance your recorded audio"
           >
-            <RefreshCw className="xl:mr-2" size={18} />
-            <span className="hidden lg:inline">Enhance</span>
+            <RefreshCw className="@xl:mr-2" size={18} />
+            <span className="hidden @lg:inline">Enhance</span>
           </Button>
         )}
 
-        {betaFeatures.speakerDiarization && meetingId && meetingFolderPath && transcriptCount > 0 && (
+        {meetingId && meetingFolderPath && transcriptCount > 0 && (
           <Button
             size="sm"
             variant="outline"
-            className="xl:px-4"
-            onClick={() => setShowDiarizeDialog(true)}
-            title="Identify individual speakers in this meeting"
+            className="@xl:px-4"
+            onClick={() => {
+              Analytics.trackButtonClick('identify_speakers', 'meeting_details');
+              setShowRediarizeDialog(true);
+            }}
+            title="Identify speakers in this meeting"
           >
-            <Users className="xl:mr-2" size={18} />
-            <span className="hidden lg:inline">Diarize</span>
+            <Users className="@xl:mr-2" size={18} />
+            <span className="hidden @lg:inline">Speakers</span>
+          </Button>
+        )}
+
+        {!isRecording && transcriptCount > 0 && (onEnterEditMode || onExitEditMode) && (
+          <Button
+            size="sm"
+            variant={isEditMode ? 'default' : 'outline'}
+            className="@xl:px-4"
+            onClick={() => {
+              if (isEditMode) {
+                Analytics.trackButtonClick('exit_edit_transcript', 'meeting_details');
+                onExitEditMode?.();
+              } else {
+                Analytics.trackButtonClick('enter_edit_transcript', 'meeting_details');
+                onEnterEditMode?.();
+              }
+            }}
+            title={isEditMode ? 'Exit edit mode' : 'Edit transcript'}
+          >
+            {isEditMode ? (
+              <>
+                <Check className="@xl:mr-2" size={18} />
+                <span className="hidden @lg:inline">Done</span>
+              </>
+            ) : (
+              <>
+                <Pencil className="@xl:mr-2" size={18} />
+                <span className="hidden @lg:inline">Edit</span>
+              </>
+            )}
+          </Button>
+        )}
+
+        {isEditMode && onUndo && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onUndo}
+            disabled={!canUndo}
+            title="Undo (Ctrl+Z)"
+          >
+            <Undo2 size={18} />
+          </Button>
+        )}
+        {isEditMode && onRedo && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onRedo}
+            disabled={!canRedo}
+            title="Redo (Ctrl+Shift+Z / Ctrl+Y)"
+          >
+            <Redo2 size={18} />
           </Button>
         )}
       </ButtonGroup>
@@ -144,12 +217,12 @@ export function TranscriptButtonGroup({
         />
       )}
 
-      {betaFeatures.speakerDiarization && meetingId && (
-        <DiarizeDialog
-          open={showDiarizeDialog}
-          onOpenChange={setShowDiarizeDialog}
+      {meetingId && meetingFolderPath && (
+        <RediarizeDialog
+          open={showRediarizeDialog}
+          onOpenChange={setShowRediarizeDialog}
           meetingId={meetingId}
-          onComplete={handleDiarizeComplete}
+          onComplete={handleRediarizeComplete}
         />
       )}
     </div>

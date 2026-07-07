@@ -292,7 +292,16 @@ impl RecordingManager {
         let recording_duration = self.state.get_active_recording_duration();
         info!("Recording duration from state: {:?}s", recording_duration);
 
-        // Save the recording with actual duration
+        // Save the recording with actual duration.
+        //
+        // NOTE: automatic post-recording speaker diarization was intentionally
+        // removed. It ran sherpa-onnx / ONNX Runtime in-process, and a native
+        // abort there (an ONNX Runtime version mismatch raised an unhandled C++
+        // exception -> `terminate()`/`abort()`) crashed the entire app on every
+        // recording stop. `tokio::task::spawn_blocking` only catches Rust
+        // panics, not foreign C++ aborts, so it could never protect against it.
+        // Diarization is now manual-only, triggered explicitly from the meeting
+        // view (see `diarization::commands::rediarize_meeting`).
         match self.recording_saver.stop_and_save(app, recording_duration).await {
             Ok(Some(file_path)) => {
                 info!("Recording saved successfully to: {}", file_path);

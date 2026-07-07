@@ -16,6 +16,19 @@ case $LOG_LEVEL in
         ;;
 esac
 
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+
+# Pick up cargo if it was just installed via rustup and PATH hasn't been reloaded
+if ! command -v cargo &> /dev/null && [ -f "$HOME/.cargo/env" ]; then
+    . "$HOME/.cargo/env"
+fi
+
+if ! command -v cargo &> /dev/null; then
+    echo "❌ cargo not found. Install Rust via https://rustup.rs and re-run."
+    exit 1
+fi
+
 # Check and install CMake if needed
 echo "Checking CMake version..."
 if ! command -v cmake &> /dev/null; then
@@ -29,14 +42,16 @@ else
     fi
 fi
 
-# Clean up previous builds
+# Clean up previous builds. The Cargo workspace target lives one level up
+# from frontend/, so we clean both that and any stray src-tauri/target.
 echo "Cleaning up previous builds..."
-rm -rf target/
+rm -rf ../target
 rm -rf src-tauri/target
 rm -rf src-tauri/gen
+rm -f src-tauri/binaries/llama-helper-*
 
 # Clean up npm, pnp and next
-echo "Cleaning up npm, pnp and next..."
+echo "Cleaning up node_modules, .next and out..."
 rm -rf node_modules
 rm -rf .next
 rm -rf .pnp.cjs
@@ -45,13 +60,9 @@ rm -rf out
 echo "Installing dependencies..."
 pnpm install
 
-# Build the Next.js application first
-echo "Building Next.js application..."
-pnpm run build
-
-# Set environment variables for the build
-
-echo "Building Tauri app..."
-pnpm run tauri build
-sleep
-
+# Delegate to build-gpu.sh — it auto-detects the GPU feature, builds the
+# llama-helper sidecar into src-tauri/binaries/llama-helper-<target-triple>
+# (required by tauri.conf.json's externalBin), then runs `pnpm tauri:build`,
+# which in turn invokes `pnpm build` via Tauri's beforeBuildCommand.
+echo "Running GPU-aware Tauri build..."
+./build-gpu.sh

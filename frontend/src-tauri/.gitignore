@@ -3,5 +3,9 @@
 /target/
 /gen/schemas
 
+# Staged shared libs copied in by scripts/stage-sherpa-dlls.mjs at build time.
+# Bundled into the installer via tauri.conf.json `resources`.
+/dist-dlls/
+
 Cargo.lock
 Cargo.toml.orig

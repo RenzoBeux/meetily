@@ -58,6 +58,33 @@ pub(crate) fn create_transcript_segments(transcripts: &[(String, f64, f64)]) -> 
         .collect()
 }
 
+/// Create transcript segments that carry a source-faithful speaker tag.
+/// Each tuple is (text, start_ms, end_ms, speaker) where `speaker` is
+/// `Some("mic")`/`Some("system")` for stereo recordings (channel origin) or
+/// `None` when the source is unknown (mono/imported audio).
+pub(crate) fn create_transcript_segments_with_speakers(
+    transcripts: &[(String, f64, f64, Option<String>)],
+) -> Vec<TranscriptSegment> {
+    transcripts
+        .iter()
+        .map(|(text, start_ms, end_ms, speaker)| {
+            let start_seconds = start_ms / 1000.0;
+            let end_seconds = end_ms / 1000.0;
+            let duration = end_seconds - start_seconds;
+
+            TranscriptSegment {
+                id: format!("transcript-{}", Uuid::new_v4()),
+                text: text.trim().to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                audio_start_time: Some(start_seconds),
+                audio_end_time: Some(end_seconds),
+                duration: Some(duration),
+                speaker: speaker.clone(),
+            }
+        })
+        .collect()
+}
+
 /// Write transcripts.json to a meeting folder (atomic write with temp file)
 pub(crate) fn write_transcripts_json(folder: &Path, segments: &[TranscriptSegment]) -> Result<()> {
     let transcript_path = folder.join("transcripts.json");
@@ -75,6 +102,7 @@ pub(crate) fn write_transcripts_json(folder: &Path, segments: &[TranscriptSegmen
                 "audio_start_time": s.audio_start_time,
                 "audio_end_time": s.audio_end_time,
                 "duration": s.duration,
+                "speaker": s.speaker,
                 "sequence_id": i
             })
         }).collect::<Vec<_>>()

@@ -98,6 +98,9 @@ pub struct Setting {
     #[sqlx(rename = "customOpenAIConfig")]
     #[serde(rename = "customOpenAIConfig")]
     pub custom_openai_config: Option<String>,
+    #[sqlx(rename = "lmStudioEndpoint")]
+    #[serde(rename = "lmStudioEndpoint")]
+    pub lm_studio_endpoint: Option<String>,
 }
 
 impl Setting {

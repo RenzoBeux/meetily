@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useReducer, startTransition, useEffect, useState, useMemo, memo } from "react";
+import { useCallback, useRef, useReducer, startTransition, useEffect, useState, memo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { useTranscriptStreaming } from "@/hooks/useTranscriptStreaming";
@@ -10,7 +10,24 @@ import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
 import { TranscriptSegmentData } from "@/types";
 import { formatSpeaker } from "@/lib/speakerLabel";
-import { SpeakerEditPopover } from "./MeetingDetails/SpeakerEditPopover";
+import { SpeakerPicker } from "./MeetingDetails/SpeakerPicker";
+
+/**
+ * Edit-mode controls passed through to each row. When undefined the view
+ * renders in read-only mode and behaves identically to before — the live
+ * recording path relies on this.
+ */
+export interface VirtualizedTranscriptEditMode {
+    selectedIds: Set<string>;
+    editingId: string | null;
+    knownSpeakers: string[];
+    onToggleSelect: (id: string, withShift: boolean) => void;
+    onStartEdit?: (id: string) => void;
+    onCommitEdit?: (id: string, newText: string) => void;
+    onCancelEdit?: () => void;
+    onReassignRowSpeaker?: (id: string, speaker: string | null) => void;
+    onSplit?: (id: string, charOffset: number, currentText: string) => void;
+}
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -29,11 +46,8 @@ export interface VirtualizedTranscriptViewProps {
     showConfidence?: boolean;
     /** Completely disable auto-scroll behavior (for meeting details page) */
     disableAutoScroll?: boolean;
-
-    /** When provided, speaker pills become clickable to reassign/rename */
-    meetingId?: string;
-    /** Called after a successful speaker edit so the parent can refetch */
-    onSpeakerChanged?: () => Promise<void> | void;
+    /** Editor controls; when undefined the view is read-only. */
+    editMode?: VirtualizedTranscriptEditMode;
 
     // Pagination props (infinite scroll)
     hasMore?: boolean;
@@ -70,7 +84,9 @@ function cleanStopWords(text: string): string {
     return cleanedText.replace(/\s+/g, ' ').trim();
 }
 
-// Memoized transcript segment component
+// Memoized transcript segment component.
+// Per-row edit booleans (isSelected, isEditing) are passed in directly rather
+// than deriving from a Set in the row, so memo() can short-circuit cleanly.
 const TranscriptSegment = memo(function TranscriptSegment({
     id,
     timestamp,
@@ -79,9 +95,16 @@ const TranscriptSegment = memo(function TranscriptSegment({
     speaker,
     isStreaming,
     showConfidence,
-    meetingId,
+    editable,
+    isSelected,
+    isEditing,
     knownSpeakers,
-    onSpeakerChanged,
+    onToggleSelect,
+    onStartEdit,
+    onCommitEdit,
+    onCancelEdit,
+    onReassignRowSpeaker,
+    onSplit,
 }: {
     id: string;
     timestamp: number;
@@ -90,26 +113,41 @@ const TranscriptSegment = memo(function TranscriptSegment({
     speaker?: string;
     isStreaming: boolean;
     showConfidence: boolean;
-    meetingId?: string;
+    editable: boolean;
+    isSelected: boolean;
+    isEditing: boolean;
     knownSpeakers: string[];
-    onSpeakerChanged?: () => Promise<void> | void;
+    onToggleSelect?: (id: string, withShift: boolean) => void;
+    onStartEdit?: (id: string) => void;
+    onCommitEdit?: (id: string, newText: string) => void;
+    onCancelEdit?: () => void;
+    onReassignRowSpeaker?: (id: string, speaker: string | null) => void;
+    onSplit?: (id: string, charOffset: number, currentText: string) => void;
 }) {
-    const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
+    const displayText = editable
+        ? text || '[Silence]'
+        : cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
     const speakerLabel = formatSpeaker(speaker);
-    const canEditSpeaker = !!meetingId && !!onSpeakerChanged;
-
-    const speakerPill = speakerLabel && (
-        <span
-            className={`text-xs px-1.5 py-0.5 rounded mt-1 flex-shrink-0 ${speakerLabel.className} ${canEditSpeaker ? 'cursor-pointer hover:ring-1 hover:ring-current' : ''}`}
-            title={canEditSpeaker ? 'Click to reassign or rename' : undefined}
-        >
-            {speakerLabel.label}
-        </span>
-    );
 
     return (
-        <div id={`segment-${id}`} className="mb-3">
+        <div
+            id={`segment-${id}`}
+            className={`mb-3 ${editable && isSelected ? 'bg-amber-50/60 rounded' : ''}`}
+        >
             <div className="flex items-start gap-2">
+                {editable && (
+                    <input
+                        type="checkbox"
+                        className="mt-1.5 flex-shrink-0"
+                        checked={isSelected}
+                        onChange={() => {}}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onToggleSelect?.(id, e.shiftKey);
+                        }}
+                        aria-label={`Select segment at ${formatRecordingTime(timestamp)}`}
+                    />
+                )}
                 <Tooltip>
                     <TooltipTrigger>
                         <span className="text-xs text-gray-400 mt-1 flex-shrink-0 min-w-[50px]">
@@ -122,30 +160,162 @@ const TranscriptSegment = memo(function TranscriptSegment({
                         )}
                     </TooltipContent>
                 </Tooltip>
-                {speakerPill && (canEditSpeaker ? (
-                    <SpeakerEditPopover
-                        transcriptId={id}
-                        meetingId={meetingId!}
-                        currentSpeaker={speaker}
+                {speakerLabel && (editable && onReassignRowSpeaker ? (
+                    <SpeakerPicker
                         knownSpeakers={knownSpeakers}
-                        onChanged={onSpeakerChanged!}
-                    >
-                        {speakerPill}
-                    </SpeakerEditPopover>
-                ) : speakerPill)}
+                        currentSpeaker={speaker}
+                        onPick={(value) => onReassignRowSpeaker(id, value)}
+                        trigger={
+                            <button
+                                type="button"
+                                className={`text-xs px-1.5 py-0.5 rounded mt-1 flex-shrink-0 hover:ring-2 hover:ring-amber-300 ${speakerLabel.className}`}
+                                title="Click to change speaker"
+                            >
+                                {speakerLabel.label}
+                            </button>
+                        }
+                    />
+                ) : (
+                    <span className={`text-xs px-1.5 py-0.5 rounded mt-1 flex-shrink-0 ${speakerLabel.className}`}>
+                        {speakerLabel.label}
+                    </span>
+                ))}
+                {!speakerLabel && editable && onReassignRowSpeaker && (
+                    <SpeakerPicker
+                        knownSpeakers={knownSpeakers}
+                        currentSpeaker={undefined}
+                        onPick={(value) => onReassignRowSpeaker(id, value)}
+                        trigger={
+                            <button
+                                type="button"
+                                className="text-xs px-1.5 py-0.5 rounded mt-1 flex-shrink-0 bg-gray-100 text-gray-500 hover:ring-2 hover:ring-amber-300"
+                                title="Set speaker"
+                            >
+                                + Speaker
+                            </button>
+                        }
+                    />
+                )}
                 <div className="flex-1">
-                    {isStreaming ? (
+                    {editable && isEditing && onCommitEdit ? (
+                        <InlineTextEditor
+                            initialText={text}
+                            onCommit={(newText) => onCommitEdit(id, newText)}
+                            onCancel={() => onCancelEdit?.()}
+                            onSplit={onSplit ? (offset, current) => onSplit(id, offset, current) : undefined}
+                        />
+                    ) : isStreaming ? (
                         <div className="bg-gray-100 border border-gray-200 rounded-lg px-3 py-2">
                             <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
                         </div>
                     ) : (
-                        <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
+                        <p
+                            className={`text-base text-gray-800 leading-relaxed ${editable ? 'cursor-text hover:bg-gray-50 rounded px-1 -mx-1' : ''}`}
+                            onClick={() => {
+                                if (editable && onStartEdit) onStartEdit(id);
+                            }}
+                        >
+                            {displayText}
+                        </p>
                     )}
                 </div>
             </div>
         </div>
     );
 });
+
+function InlineTextEditor({
+    initialText,
+    onCommit,
+    onCancel,
+    onSplit,
+}: {
+    initialText: string;
+    onCommit: (newText: string) => void;
+    onCancel: () => void;
+    onSplit?: (charOffset: number, currentText: string) => void;
+}) {
+    const [value, setValue] = useState(initialText);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const skipCommitOnBlurRef = useRef(false);
+
+    useEffect(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.focus();
+        const len = el.value.length;
+        el.setSelectionRange(len, len);
+        el.style.height = 'auto';
+        el.style.height = `${el.scrollHeight}px`;
+    }, []);
+
+    const commit = useCallback(() => {
+        if (value === initialText) {
+            onCancel();
+            return;
+        }
+        onCommit(value);
+    }, [value, initialText, onCommit, onCancel]);
+
+    const triggerSplit = useCallback(() => {
+        const el = textareaRef.current;
+        if (!el || !onSplit) return;
+        const offset = el.selectionStart ?? 0;
+        // Suppress the blur-commit that fires when split mutates the row away.
+        skipCommitOnBlurRef.current = true;
+        onSplit(offset, value);
+    }, [onSplit, value]);
+
+    return (
+        <div className="flex items-start gap-1">
+            <textarea
+                ref={textareaRef}
+                value={value}
+                onChange={(e) => {
+                    setValue(e.target.value);
+                    const el = e.currentTarget;
+                    el.style.height = 'auto';
+                    el.style.height = `${el.scrollHeight}px`;
+                }}
+                onBlur={() => {
+                    if (skipCommitOnBlurRef.current) {
+                        skipCommitOnBlurRef.current = false;
+                        return;
+                    }
+                    commit();
+                }}
+                onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                        e.preventDefault();
+                        onCancel();
+                    } else if (e.key === 'Enter' && e.ctrlKey) {
+                        e.preventDefault();
+                        triggerSplit();
+                    } else if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        commit();
+                    }
+                }}
+                className="w-full text-base text-gray-800 leading-relaxed bg-white border border-blue-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none overflow-hidden"
+                rows={1}
+            />
+            {onSplit && (
+                <button
+                    type="button"
+                    onMouseDown={(e) => {
+                        // Prevent blur from firing before we read the caret.
+                        e.preventDefault();
+                    }}
+                    onClick={triggerSplit}
+                    className="text-xs text-amber-700 hover:text-amber-900 hover:underline mt-1 px-1"
+                    title="Split at caret (Ctrl+Enter)"
+                >
+                    ✂ Split
+                </button>
+            )}
+        </div>
+    );
+}
 
 export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps> = ({
     segments,
@@ -156,23 +326,14 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     enableStreaming = false,
     showConfidence = true,
     disableAutoScroll = false,
-    meetingId,
-    onSpeakerChanged,
+    editMode,
     hasMore = false,
     isLoadingMore = false,
     totalCount = 0,
     loadedCount = 0,
     onLoadMore,
 }) => {
-    // Distinct speakers in this meeting, used to populate the "reassign to"
-    // chip list in the edit popover.
-    const knownSpeakers = useMemo(() => {
-        const seen = new Set<string>();
-        for (const s of segments) {
-            if (s.speaker) seen.add(s.speaker);
-        }
-        return Array.from(seen);
-    }, [segments]);
+    const editable = !!editMode;
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
     // Ref for infinite scroll trigger element
@@ -185,7 +346,10 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     const virtualizer = useVirtualizer({
         count: segments.length,
         getScrollElement: () => scrollRef.current,
-        estimateSize: () => 60, // Estimated height per segment
+        // Edit mode adds a checkbox row + interactive controls, so rows are
+        // slightly taller. The virtualizer self-corrects via measureElement,
+        // but starting closer avoids initial jitter.
+        estimateSize: () => (editable ? 80 : 60),
         overscan: 10, // Render extra items above/below viewport
         onChange: () => {
             startTransition(() => {
@@ -345,9 +509,16 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         speaker={segment.speaker}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
-                                        meetingId={meetingId}
-                                        knownSpeakers={knownSpeakers}
-                                        onSpeakerChanged={onSpeakerChanged}
+                                        editable={editable}
+                                        isSelected={editable && (editMode?.selectedIds.has(segment.id) ?? false)}
+                                        isEditing={editable && editMode?.editingId === segment.id}
+                                        knownSpeakers={editMode?.knownSpeakers ?? []}
+                                        onToggleSelect={editMode?.onToggleSelect}
+                                        onStartEdit={editMode?.onStartEdit}
+                                        onCommitEdit={editMode?.onCommitEdit}
+                                        onCancelEdit={editMode?.onCancelEdit}
+                                        onReassignRowSpeaker={editMode?.onReassignRowSpeaker}
+                                        onSplit={editMode?.onSplit}
                                     />
                                 </div>
                             );
@@ -405,9 +576,16 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         speaker={segment.speaker}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
-                                        meetingId={meetingId}
-                                        knownSpeakers={knownSpeakers}
-                                        onSpeakerChanged={onSpeakerChanged}
+                                        editable={editable}
+                                        isSelected={editable && (editMode?.selectedIds.has(segment.id) ?? false)}
+                                        isEditing={editable && editMode?.editingId === segment.id}
+                                        knownSpeakers={editMode?.knownSpeakers ?? []}
+                                        onToggleSelect={editMode?.onToggleSelect}
+                                        onStartEdit={editMode?.onStartEdit}
+                                        onCommitEdit={editMode?.onCommitEdit}
+                                        onCancelEdit={editMode?.onCancelEdit}
+                                        onReassignRowSpeaker={editMode?.onReassignRowSpeaker}
+                                        onSplit={editMode?.onSplit}
                                     />
                                 </motion.div>
                             );

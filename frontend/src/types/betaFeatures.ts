@@ -22,17 +22,10 @@ export interface BetaFeatures {
    * @since v0.3.0
    */
   importAndRetranscribe: boolean;
-  /**
-   * Run speaker diarization on a saved meeting via the FastAPI backend.
-   * Requires the backend running and a HuggingFace access token with
-   * pyannote/speaker-diarization-3.1 model access.
-   */
-  speakerDiarization: boolean;
 }
 
 export const DEFAULT_BETA_FEATURES: BetaFeatures = {
   importAndRetranscribe: true, // Default: enabled
-  speakerDiarization: true,    // Default: enabled (still requires HF token + backend)
 };
 
 
@@ -41,7 +34,6 @@ export const DEFAULT_BETA_FEATURES: BetaFeatures = {
  */
 export const BETA_FEATURE_NAMES: Record<keyof BetaFeatures, string> = {
   importAndRetranscribe: 'Import Audio & Retranscribe',
-  speakerDiarization: 'Speaker Diarization',
 };
 
 /**
@@ -49,7 +41,6 @@ export const BETA_FEATURE_NAMES: Record<keyof BetaFeatures, string> = {
  */
 export const BETA_FEATURE_DESCRIPTIONS: Record<keyof BetaFeatures, string> = {
   importAndRetranscribe: 'Import audio files to transcribe or retranscribe existing meetings with different language settings.',
-  speakerDiarization: 'Identify individual speakers in a saved meeting. Requires the FastAPI backend and a HuggingFace token with pyannote model access.',
 };
 
 /**
