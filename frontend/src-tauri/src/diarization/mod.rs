@@ -9,4 +9,6 @@
 pub mod aligner;
 pub mod commands;
 pub mod engine;
+pub mod localpro;
 pub mod models;
+pub mod remote;

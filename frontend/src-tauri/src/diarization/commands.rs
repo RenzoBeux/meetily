@@ -10,14 +10,57 @@ use log::{info, warn};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
 
+use crate::audio::decoder::decode_audio_file;
 use crate::audio::recording_saver::TranscriptSegment;
 use crate::audio::retranscription::find_audio_file;
 use crate::database::repositories::meeting::MeetingsRepository;
+use crate::database::repositories::setting::SettingsRepository;
 use crate::database::repositories::transcript::TranscriptsRepository;
 use crate::diarization::aligner::{assign_speakers, unique_speakers};
-use crate::diarization::engine::{detect_gpu, DiarizationEngine};
+use crate::diarization::engine::{detect_gpu, mask_ranges, DiarizationEngine};
 use crate::diarization::models::{ensure_models, status, ModelsStatus};
+use crate::diarization::remote::{encode_wav_pcm16_mono, PyannoteClient};
 use crate::state::AppState;
+
+/// Which diarization backend to run. Local (sherpa-onnx, on-device) is the
+/// default; LocalPro runs pyannote community-1 in a Python sidecar (fully
+/// local, needs a Hugging Face token for the gated model); PyannoteCloud
+/// uploads mic-masked audio to the pyannoteAI API (model "precision-2") and
+/// requires an API key in transcript settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiarProvider {
+    Local,
+    LocalPro,
+    PyannoteCloud,
+}
+
+fn parse_provider(provider: Option<&str>) -> Result<DiarProvider, String> {
+    match provider.unwrap_or("local") {
+        "local" => Ok(DiarProvider::Local),
+        "local-pro" => Ok(DiarProvider::LocalPro),
+        "pyannote" => Ok(DiarProvider::PyannoteCloud),
+        other => Err(format!("Unknown diarization provider: {other}")),
+    }
+}
+
+/// Decode the meeting audio, silence the mic ("You") ranges, and encode as a
+/// mono 16 kHz PCM16 WAV — the shared input for both non-sherpa providers.
+async fn prepare_masked_wav(
+    audio_path: &std::path::Path,
+    mic_ranges: &[(f64, f64)],
+) -> anyhow::Result<Vec<u8>> {
+    let audio = audio_path.to_path_buf();
+    let ranges = mic_ranges.to_vec();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+        let decoded = decode_audio_file(&audio)
+            .map_err(|e| anyhow!("Failed to decode audio for diarization: {e}"))?;
+        let mut samples = decoded.to_whisper_format();
+        mask_ranges(&mut samples, &ranges, 16_000);
+        Ok(encode_wav_pcm16_mono(&samples, 16_000))
+    })
+    .await
+    .map_err(|e| anyhow!("Audio preparation task panicked: {e}"))?
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeAcceleration {
@@ -90,9 +133,11 @@ pub async fn rediarize_meeting<R: Runtime>(
     state: tauri::State<'_, AppState>,
     meeting_id: String,
     num_speakers: Option<u32>,
+    provider: Option<String>,
 ) -> Result<RediarizationResult, String> {
+    let provider = parse_provider(provider.as_deref())?;
     let pool = state.db_manager.pool().clone();
-    let result = run_rediarization(app.clone(), &pool, &meeting_id, num_speakers).await;
+    let result = run_rediarization(app.clone(), &pool, &meeting_id, num_speakers, provider).await;
 
     match result {
         Ok(r) => {
@@ -128,6 +173,7 @@ async fn run_rediarization<R: Runtime>(
     pool: &sqlx::SqlitePool,
     meeting_id: &str,
     num_speakers: Option<u32>,
+    provider: DiarProvider,
 ) -> anyhow::Result<RediarizationResult> {
     let _ = app.emit(
         "diarization-progress",
@@ -154,10 +200,6 @@ async fn run_rediarization<R: Runtime>(
         meeting_id,
         audio_path.display()
     );
-
-    let paths = ensure_models(&app)
-        .await
-        .map_err(|e| anyhow!("Diarization models unavailable: {e}"))?;
 
     // Load the existing transcripts up front: we need the "mic"-tagged ranges
     // to mask the local user out of clustering, plus the rows themselves to
@@ -187,14 +229,85 @@ async fn run_rediarization<R: Runtime>(
         serde_json::json!({"status": "running", "meeting_id": meeting_id}),
     );
 
-    let audio_for_blocking = audio_path.clone();
-    let forced_clusters = num_speakers.map(|n| n as i32);
-    let diar = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let engine = DiarizationEngine::new(&paths, forced_clusters)?;
-        engine.run_on_file_excluding(&audio_for_blocking, &mic_ranges)
-    })
-    .await
-    .map_err(|e| anyhow!("Diarization task panicked: {e}"))??;
+    let diar = match provider {
+        DiarProvider::Local => {
+            // Local models are only needed (and downloaded) on this path.
+            let paths = ensure_models(&app)
+                .await
+                .map_err(|e| anyhow!("Diarization models unavailable: {e}"))?;
+            let audio_for_blocking = audio_path.clone();
+            let forced_clusters = num_speakers.map(|n| n as i32);
+            tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                let engine = DiarizationEngine::new(&paths, forced_clusters)?;
+                engine.run_on_file_excluding(&audio_for_blocking, &mic_ranges)
+            })
+            .await
+            .map_err(|e| anyhow!("Diarization task panicked: {e}"))??
+        }
+        DiarProvider::LocalPro => {
+            let hf_token = SettingsRepository::get_transcript_api_key(pool, "huggingface")
+                .await
+                .map_err(|e| anyhow!("Failed to read Hugging Face token: {e}"))?
+                .filter(|k| !k.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow!("Hugging Face token not configured. Add it in Settings → Transcript.")
+                })?;
+
+            let wav_bytes = prepare_masked_wav(&audio_path, &mic_ranges).await?;
+            let wav_path =
+                std::env::temp_dir().join(format!("meetily-diar-{}.wav", uuid::Uuid::new_v4()));
+            tokio::fs::write(&wav_path, &wav_bytes)
+                .await
+                .map_err(|e| anyhow!("Failed to write temp WAV: {e}"))?;
+
+            let progress_app = app.clone();
+            let progress_meeting_id = meeting_id.to_string();
+            let result = crate::diarization::localpro::run_local_pro(
+                &app,
+                &wav_path,
+                num_speakers,
+                &hf_token,
+                &move |stage| {
+                    let _ = progress_app.emit(
+                        "diarization-progress",
+                        serde_json::json!({"status": stage, "meeting_id": progress_meeting_id}),
+                    );
+                },
+            )
+            .await;
+
+            if let Err(e) = tokio::fs::remove_file(&wav_path).await {
+                warn!("Failed to remove temp WAV {}: {e}", wav_path.display());
+            }
+            result?
+        }
+        DiarProvider::PyannoteCloud => {
+            let api_key = SettingsRepository::get_transcript_api_key(pool, "pyannote")
+                .await
+                .map_err(|e| anyhow!("Failed to read pyannoteAI API key: {e}"))?
+                .filter(|k| !k.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow!("pyannoteAI API key not configured. Add it in Settings → Transcript.")
+                })?;
+
+            // Masking mirrors the local path: the clusterer (cloud or
+            // on-device) only ever sees "them" audio.
+            let wav_bytes = prepare_masked_wav(&audio_path, &mic_ranges).await?;
+
+            let object_key = format!("meetily/{}-{}.wav", meeting_id, uuid::Uuid::new_v4());
+            let client = PyannoteClient::new(api_key)?;
+            let progress_app = app.clone();
+            let progress_meeting_id = meeting_id.to_string();
+            client
+                .diarize(wav_bytes, &object_key, num_speakers, &move |stage| {
+                    let _ = progress_app.emit(
+                        "diarization-progress",
+                        serde_json::json!({"status": stage, "meeting_id": progress_meeting_id}),
+                    );
+                })
+                .await?
+        }
+    };
 
     let _ = app.emit(
         "diarization-progress",
@@ -262,4 +375,32 @@ async fn run_rediarization<R: Runtime>(
         speakers,
         segments_updated,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_provider_defaults_to_local() {
+        assert_eq!(parse_provider(None).unwrap(), DiarProvider::Local);
+    }
+
+    #[test]
+    fn parse_provider_accepts_known_values() {
+        assert_eq!(parse_provider(Some("local")).unwrap(), DiarProvider::Local);
+        assert_eq!(
+            parse_provider(Some("local-pro")).unwrap(),
+            DiarProvider::LocalPro
+        );
+        assert_eq!(
+            parse_provider(Some("pyannote")).unwrap(),
+            DiarProvider::PyannoteCloud
+        );
+    }
+
+    #[test]
+    fn parse_provider_rejects_unknown_values() {
+        assert!(parse_provider(Some("skynet")).is_err());
+    }
 }

@@ -37,6 +37,28 @@ pub fn detect_gpu() -> bool {
     cfg!(feature = "diarization-cuda")
 }
 
+/// Zero out the given time ranges (in seconds) in a mono sample buffer.
+/// Used to silence the local microphone ("You") regions before clustering so
+/// only remote speakers are diarized. Ranges with `end <= start` are ignored;
+/// out-of-bounds ranges are clamped. Returns the number of samples masked.
+pub fn mask_ranges(samples: &mut [f32], ranges: &[(f64, f64)], sample_rate: u32) -> usize {
+    let total = samples.len() as i64;
+    let rate = sample_rate as f64;
+    let mut masked: usize = 0;
+    for &(start, end) in ranges {
+        if end <= start {
+            continue;
+        }
+        let from = ((start * rate).floor() as i64).clamp(0, total) as usize;
+        let to = ((end * rate).ceil() as i64).clamp(0, total) as usize;
+        if to > from {
+            samples[from..to].iter_mut().for_each(|s| *s = 0.0);
+            masked += to - from;
+        }
+    }
+    masked
+}
+
 impl DiarizationEngine {
     /// `num_speakers`: when `Some(n)` with `n >= 1`, forces exactly `n` speaker
     /// clusters — the most reliable cure for over-/under-segmentation when the
@@ -159,19 +181,7 @@ impl DiarizationEngine {
             ));
         }
         if !exclude_ranges.is_empty() {
-            let total = samples.len() as i64;
-            let mut masked_samples: usize = 0;
-            for &(start, end) in exclude_ranges {
-                if end <= start {
-                    continue;
-                }
-                let from = ((start * 16_000.0).floor() as i64).clamp(0, total) as usize;
-                let to = ((end * 16_000.0).ceil() as i64).clamp(0, total) as usize;
-                if to > from {
-                    samples[from..to].iter_mut().for_each(|s| *s = 0.0);
-                    masked_samples += to - from;
-                }
-            }
+            let masked_samples = mask_ranges(&mut samples, exclude_ranges, 16_000);
             info!(
                 "Masked {:.2}s of mic audio across {} range(s) before clustering",
                 masked_samples as f64 / 16_000.0,
@@ -208,4 +218,39 @@ fn num_cpus_like() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mask_ranges_zeroes_floor_to_ceil_sample_window() {
+        // 1 second at 10 Hz for easy arithmetic.
+        let mut samples = vec![1.0_f32; 10];
+        let masked = mask_ranges(&mut samples, &[(0.25, 0.55)], 10);
+
+        // floor(2.5)=2 .. ceil(5.5)=6
+        assert_eq!(masked, 4);
+        assert_eq!(samples, vec![1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn mask_ranges_clamps_out_of_bounds() {
+        let mut samples = vec![1.0_f32; 4];
+        let masked = mask_ranges(&mut samples, &[(-5.0, 0.2), (0.3, 99.0)], 10);
+
+        // (-5.0, 0.2) → [0, 2); (0.3, 99.0) → [3, 4). Sample 2 stays untouched.
+        assert_eq!(masked, 3);
+        assert_eq!(samples, vec![0.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn mask_ranges_ignores_inverted_and_empty_ranges() {
+        let mut samples = vec![1.0_f32; 8];
+        let masked = mask_ranges(&mut samples, &[(0.5, 0.5), (0.6, 0.2)], 10);
+
+        assert_eq!(masked, 0);
+        assert!(samples.iter().all(|s| *s == 1.0));
+    }
 }

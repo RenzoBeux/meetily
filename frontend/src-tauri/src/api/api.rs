@@ -491,6 +491,99 @@ pub async fn api_get_transcript_api_key<R: Runtime>(
     }
 }
 
+/// Saves a transcript-side API key WITHOUT touching provider/model config.
+/// (`api_save_transcript_config` also upserts the active transcription
+/// provider, which must not change when e.g. the pyannote diarization key
+/// is saved from settings.)
+#[tauri::command]
+pub async fn api_save_transcript_api_key<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    api_key: String,
+) -> Result<(), String> {
+    log_info!(
+        "api_save_transcript_api_key called for provider '{}'",
+        &provider
+    );
+    SettingsRepository::save_transcript_api_key(&state.db_manager.pool(), &provider, &api_key)
+        .await
+        .map_err(|e| {
+            log_error!(
+                "Failed to save transcript API key for provider '{}': {}",
+                &provider,
+                e
+            );
+            e.to_string()
+        })
+}
+
+#[tauri::command]
+pub async fn api_delete_transcript_api_key<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    provider: String,
+) -> Result<(), String> {
+    log_info!(
+        "api_delete_transcript_api_key called for provider '{}'",
+        &provider
+    );
+    SettingsRepository::delete_transcript_api_key(&state.db_manager.pool(), &provider)
+        .await
+        .map_err(|e| {
+            log_error!(
+                "Failed to delete transcript API key for provider '{}': {}",
+                &provider,
+                e
+            );
+            e.to_string()
+        })
+}
+
+/// Validates a pyannoteAI API key against their test endpoint.
+#[tauri::command]
+pub async fn api_test_pyannote_key(api_key: String) -> Result<serde_json::Value, String> {
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err("API key is empty".to_string());
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://api.pyannote.ai/v1/test")
+        .header("Authorization", format!("Bearer {}", key))
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_timeout() {
+                "Connection to pyannote.ai timed out.".to_string()
+            } else if e.is_connect() {
+                "Could not connect to pyannote.ai. Check your network.".to_string()
+            } else {
+                format!("Connection failed: {}", e)
+            }
+        })?;
+
+    let status = response.status();
+    if status.is_success() {
+        Ok(serde_json::json!({
+            "status": "success",
+            "message": "API key is valid",
+        }))
+    } else if status == reqwest::StatusCode::UNAUTHORIZED
+        || status == reqwest::StatusCode::FORBIDDEN
+    {
+        Err("Invalid pyannoteAI API key".to_string())
+    } else {
+        let body = response.text().await.unwrap_or_default();
+        Err(format!(
+            "pyannote.ai returned status {}: {}",
+            status, body
+        ))
+    }
+}
+
 #[tauri::command]
 pub async fn api_delete_api_key<R: Runtime>(
     _app: AppHandle<R>,

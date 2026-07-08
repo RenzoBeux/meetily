@@ -189,6 +189,8 @@ impl SettingsRepository {
             "elevenLabs" => "elevenLabsApiKey",
             "groq" => "groqApiKey",
             "openai" => "openaiApiKey",
+            "pyannote" => "pyannoteApiKey",
+            "huggingface" => "huggingfaceToken",
             _ => {
                 return Err(sqlx::Error::Protocol(
                     format!("Invalid provider: {}", provider).into(),
@@ -221,6 +223,8 @@ impl SettingsRepository {
             "elevenLabs" => "elevenLabsApiKey",
             "groq" => "groqApiKey",
             "openai" => "openaiApiKey",
+            "pyannote" => "pyannoteApiKey",
+            "huggingface" => "huggingfaceToken",
             _ => {
                 return Err(sqlx::Error::Protocol(
                     format!("Invalid provider: {}", provider).into(),
@@ -234,6 +238,35 @@ impl SettingsRepository {
         );
         let api_key = sqlx::query_scalar(&query).fetch_optional(pool).await?;
         Ok(api_key)
+    }
+
+    pub async fn delete_transcript_api_key(
+        pool: &SqlitePool,
+        provider: &str,
+    ) -> std::result::Result<(), sqlx::Error> {
+        let api_key_column = match provider {
+            "localWhisper" => "whisperApiKey",
+            "parakeet" => return Ok(()), // Parakeet doesn't need an API key
+            "deepgram" => "deepgramApiKey",
+            "elevenLabs" => "elevenLabsApiKey",
+            "groq" => "groqApiKey",
+            "openai" => "openaiApiKey",
+            "pyannote" => "pyannoteApiKey",
+            "huggingface" => "huggingfaceToken",
+            _ => {
+                return Err(sqlx::Error::Protocol(
+                    format!("Invalid provider: {}", provider).into(),
+                ))
+            }
+        };
+
+        let query = format!(
+            "UPDATE transcript_settings SET {} = NULL WHERE id = '1'",
+            api_key_column
+        );
+        sqlx::query(&query).execute(pool).await?;
+
+        Ok(())
     }
 
     pub async fn delete_api_key(

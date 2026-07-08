@@ -149,7 +149,7 @@ async fn file_at_least(path: &std::path::Path, min: u64) -> bool {
     }
 }
 
-async fn download_file<R: Runtime>(
+pub(crate) async fn download_file<R: Runtime>(
     app: &AppHandle<R>,
     name: &str,
     url: &str,

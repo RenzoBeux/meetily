@@ -115,6 +115,10 @@ thiserror = "2.0.16"                # Error handling for Parakeet
 # Used by diarization::models to extract sherpa-onnx pyannote bundle (.tar.bz2)
 tar = "0.4"
 bzip2 = "0.4"
+# Used by diarization::localpro to extract the `uv` bootstrap binary
+# (Windows ships .zip, macOS/Linux ship .tar.gz)
+zip = "2.2"
+flate2 = "1"
 # NOTE: sherpa-onnx (speaker diarization) is declared in platform-specific
 # sections below. Windows uses `shared` linking to sidestep the MSVC /MT
 # (sherpa-onnx prebuilt) vs /MD (whisper-rs prebuilt) C-runtime conflict.
