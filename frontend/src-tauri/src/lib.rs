@@ -42,6 +42,7 @@ pub mod console_utils;
 pub mod database;
 pub mod diarization;
 pub mod export;
+pub mod mcp;
 pub mod notifications;
 pub mod ollama;
 pub mod onboarding;

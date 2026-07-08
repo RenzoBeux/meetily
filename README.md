@@ -39,7 +39,20 @@ Meetily runs entirely on your local machine. It captures your meetings (micropho
 - **Speaker-attributed AI** — summaries and meeting chat see `Speaker: text` labels, so answers can attribute statements to people.
 - **Per-meeting chat** — ask questions about a meeting, grounded in its transcript, with markdown rendering and message persistence.
 - **LM Studio provider** — alongside Ollama, Claude, OpenAI, Groq, OpenRouter, custom OpenAI-compatible endpoints, and a bundled llama.cpp sidecar.
-- **MCP server** — read-only [Model Context Protocol](https://modelcontextprotocol.io) access to your meetings database (`backend/mcp_server/`), so tools like Claude can query your transcripts and summaries.
+- **Built-in MCP server** — read-only [Model Context Protocol](https://modelcontextprotocol.io) access to your meetings database, built into the app binary. Point any MCP client (Claude Desktop, Claude Code, Cursor, …) at the Meetily executable with the `--mcp` flag — no Python, no separate install:
+
+  ```json
+  {
+    "mcpServers": {
+      "meetily": {
+        "command": "C:\\Program Files\\Meetily\\meetily.exe",
+        "args": ["--mcp"]
+      }
+    }
+  }
+  ```
+
+  (macOS: `/Applications/meetily.app/Contents/MacOS/meetily`.) Tools: `list_meetings`, `get_transcript`, `get_summary`, `get_meeting`, `search_transcripts`. The database is opened read-only and the GUI does not need to be running. Override the DB location with `--db <path>` or `MEETILY_DB_PATH` if needed.
 - **Whisper output filtering** — reduces YouTube-style hallucinations in transcripts.
 - **Markdown export** for meetings.
 - **Zero telemetry** — all analytics (PostHog) and the auto-updater have been removed. The app makes no usage-tracking or version-check calls; the only network connections are model downloads and any LLM provider you explicitly configure. See [PRIVACY_POLICY.md](PRIVACY_POLICY.md).
