@@ -42,6 +42,7 @@ Meetily runs entirely on your local machine. It captures your meetings (micropho
 - **MCP server** — read-only [Model Context Protocol](https://modelcontextprotocol.io) access to your meetings database (`backend/mcp_server/`), so tools like Claude can query your transcripts and summaries.
 - **Whisper output filtering** — reduces YouTube-style hallucinations in transcripts.
 - **Markdown export** for meetings.
+- **Zero telemetry** — all analytics (PostHog) and the auto-updater have been removed. The app makes no usage-tracking or version-check calls; the only network connections are model downloads and any LLM provider you explicitly configure. See [PRIVACY_POLICY.md](PRIVACY_POLICY.md).
 
 ## Features
 

@@ -2,7 +2,6 @@ import { useCallback, RefObject } from 'react';
 import { Transcript, Summary } from '@/types';
 import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
 import { toast } from 'sonner';
-import Analytics from '@/lib/analytics';
 import {
   fetchAllTranscripts,
   buildTranscriptMarkdown,
@@ -42,16 +41,6 @@ export function useCopyOperations({
     const markdown = buildTranscriptMarkdown(meeting, meetingTitle, allTranscripts);
     await navigator.clipboard.writeText(markdown);
     toast.success("Transcript copied to clipboard");
-
-    const wordCount = allTranscripts
-      .map(t => t.text.split(/\s+/).length)
-      .reduce((a, b) => a + b, 0);
-
-    await Analytics.trackCopy('transcript', {
-      meeting_id: meeting.id,
-      transcript_length: allTranscripts.length.toString(),
-      word_count: wordCount.toString()
-    });
   }, [meeting, meetingTitle]);
 
   const handleCopySummary = useCallback(async () => {
@@ -65,11 +54,6 @@ export function useCopyOperations({
 
       await navigator.clipboard.writeText(fullMarkdown);
       toast.success("Summary copied to clipboard");
-
-      await Analytics.trackCopy('summary', {
-        meeting_id: meeting.id,
-        has_markdown: (!!aiSummary && 'markdown' in aiSummary).toString()
-      });
     } catch (error) {
       console.error('❌ Failed to copy summary:', error);
       toast.error("Failed to copy summary");

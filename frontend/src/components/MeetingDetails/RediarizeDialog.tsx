@@ -12,7 +12,6 @@ import { Button } from '../ui/button';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
-import Analytics from '@/lib/analytics';
 
 interface RediarizeDialogProps {
   open: boolean;
@@ -131,18 +130,9 @@ export function RediarizeDialog({
     try {
       const parsed = parseInt(numSpeakers, 10);
       const parsedNumSpeakers = Number.isFinite(parsed) && parsed >= 1 ? parsed : undefined;
-      await Analytics.track('rediarize_meeting_started', {
-        meeting_id: meetingId,
-        num_speakers: parsedNumSpeakers === undefined ? 'auto' : String(parsedNumSpeakers),
-      });
-      const result = await invoke<RediarizationResult>('rediarize_meeting', {
+      await invoke<RediarizationResult>('rediarize_meeting', {
         meetingId,
         numSpeakers: parsedNumSpeakers,
-      });
-      await Analytics.track('rediarize_meeting_completed', {
-        meeting_id: meetingId,
-        speakers: String(result.speakers),
-        segments_updated: String(result.segments_updated),
       });
       onCompleteRef.current?.();
       onOpenChangeRef.current(false);
@@ -150,7 +140,6 @@ export function RediarizeDialog({
       const msg = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err);
       setError(msg);
       setIsProcessing(false);
-      await Analytics.trackError('rediarize_meeting_failed', msg);
     }
   };
 

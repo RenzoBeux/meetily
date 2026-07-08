@@ -4,7 +4,6 @@ import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import { Copy, FolderOpen, RefreshCw, Download, Users, Pencil, Check, Undo2, Redo2 } from 'lucide-react';
-import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
 import { RediarizeDialog } from './RediarizeDialog';
 import { ExportMarkdownDialog } from './ExportMarkdownDialog';
@@ -75,7 +74,6 @@ export function TranscriptButtonGroup({
           variant="outline"
           size="sm"
           onClick={() => {
-            Analytics.trackButtonClick('copy_transcript', 'meeting_details');
             onCopyTranscript();
           }}
           disabled={transcriptCount === 0}
@@ -89,7 +87,6 @@ export function TranscriptButtonGroup({
           variant="outline"
           size="sm"
           onClick={() => {
-            Analytics.trackButtonClick('open_export_dialog', 'meeting_details');
             setShowExportDialog(true);
           }}
           disabled={transcriptCount === 0 && !hasSummary}
@@ -104,7 +101,6 @@ export function TranscriptButtonGroup({
           variant="outline"
           className="@xl:px-4"
           onClick={() => {
-            Analytics.trackButtonClick('open_recording_folder', 'meeting_details');
             onOpenMeetingFolder();
           }}
           title="Open Recording Folder"
@@ -119,7 +115,6 @@ export function TranscriptButtonGroup({
             variant="outline"
             className="bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 border-blue-200 @xl:px-4"
             onClick={() => {
-              Analytics.trackButtonClick('enhance_transcript', 'meeting_details');
               setShowRetranscribeDialog(true);
             }}
             title="Retranscribe to enhance your recorded audio"
@@ -135,7 +130,6 @@ export function TranscriptButtonGroup({
             variant="outline"
             className="@xl:px-4"
             onClick={() => {
-              Analytics.trackButtonClick('identify_speakers', 'meeting_details');
               setShowRediarizeDialog(true);
             }}
             title="Identify speakers in this meeting"
@@ -152,10 +146,8 @@ export function TranscriptButtonGroup({
             className="@xl:px-4"
             onClick={() => {
               if (isEditMode) {
-                Analytics.trackButtonClick('exit_edit_transcript', 'meeting_details');
                 onExitEditMode?.();
               } else {
-                Analytics.trackButtonClick('enter_edit_transcript', 'meeting_details');
                 onEnterEditMode?.();
               }
             }}

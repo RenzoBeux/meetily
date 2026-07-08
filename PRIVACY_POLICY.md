@@ -1,125 +1,61 @@
 # Meetily Privacy Policy
 
-*Last updated: [Current Date]*
-
 ## Our Privacy-First Commitment
 
-Meetily is built on the principle that your meeting data should remain private and under your control. This privacy policy explains how we handle data in our open-source meeting assistant.
+Meetily is built on the principle that your meeting data should remain private and under your control. This fork collects **no telemetry and no usage analytics whatsoever**, and does not phone home for any reason.
 
 ## Data Processing Philosophy
 
 ### Local-First Processing
-- **Meeting transcription**: Processed entirely on your device using local Whisper models
+- **Meeting transcription**: Processed entirely on your device using local Whisper/Parakeet models
 - **Audio recordings**: Never transmitted to external servers
-- **Meeting content**: Remains on your infrastructure
-- **AI summaries**: Generated locally or through your chosen LLM provider
+- **Meeting content**: Stored only in a local SQLite database on your machine
+- **AI summaries**: Generated locally, or through an LLM provider you explicitly configure
 
 ### Your Data Ownership
 - You own all meeting data, transcripts, and recordings
 - Data is stored locally on your device
-- No vendor lock-in - export your data anytime
+- No vendor lock-in — export your data anytime
 - Complete control over data retention and deletion
 
-## Usage Analytics
+## No Telemetry, No Analytics
 
-### What We Collect
-Usage analytics is optional and off by default. When you choose to enable it, Meetily collects minimal, anonymized usage data:
+This build contains **no analytics or telemetry code at all**. There is:
+- ❌ No PostHog, Sentry, Segment, or any other analytics/telemetry SDK
+- ❌ No usage tracking, event tracking, session tracking, or crash reporting
+- ❌ No automatic update checks or version pings to any server
+- ❌ No "opt-in" analytics toggle — there is simply nothing to opt into
 
-**Application Usage:**
-- Feature usage patterns (which tools you use most)
-- Session duration and frequency
-- Performance metrics (transcription success rates, error frequencies)
-- UI interaction patterns (button clicks, navigation flows)
+The only network connections Meetily makes are ones **you** initiate, listed below.
 
-**Technical Metrics:**
-- Application version and platform information
-- Error logs and crash reports (anonymized)
-- Performance benchmarks (processing times, resource usage)
+## Network Connections (all user-initiated)
 
-### What We DON'T Collect
-We never collect:
-- ❌ Meeting content, transcripts, or recordings
-- ❌ Personal information or identifiable data
-- ❌ File names, meeting titles, or metadata
-- ❌ Audio data or voice patterns
-- ❌ Participant names or contact information
-- ❌ LLM conversations or AI-generated content
+Meetily connects to the network only for these purposes, and only when you ask it to:
 
-### Why We Collect This Data
-When enabled, analytics helps us with:
-- **Product Quality**: Identifying and fixing bugs that impact user experience
-- **Performance Optimization**: Understanding resource usage and system bottlenecks
-- **Security**: Detecting potential security issues and vulnerabilities
-- **Feature Development**: Making data-driven decisions about new features
-- **Open Source Sustainability**: Ensuring the project meets user needs effectively
+### Model downloads (one-time, to run locally)
+- **Speech-to-text models** (Whisper, Parakeet) and **speaker-diarization models** are downloaded from their public model hosts the first time you use them, then run entirely offline.
+- **Built-in summary models** are downloaded on demand and then run locally.
 
-### Analytics Implementation
-- **Provider**: PostHog (privacy-focused analytics platform)
-- **Default**: Off by default; analytics starts only after you enable it in settings
-- **Anonymization**: All data linked to generated user IDs only - no personal identification
-- **Data retention**: 12 months maximum, then automatically deleted
-- **Encryption**: All data encrypted in transit using industry-standard protocols
-- **Location**: Data processed in accordance with PostHog's privacy policy
-- **Access Control**: Strictly limited to core development team members
+These are inbound downloads of open model weights — no personal data is sent.
 
-## Third-Party Services
+### LLM providers (only if you configure one)
+If you choose a cloud provider for summaries or chat, your transcript is sent to **that provider you selected**, subject to their privacy policy:
+- **Anthropic Claude**, **OpenAI**, **Groq**, **OpenRouter**, or a **custom OpenAI-compatible endpoint** you specify.
+- **Local providers** (Ollama, LM Studio) and the bundled local summary engine process everything on your machine — nothing leaves your device.
 
-### LLM Providers (Optional)
-If you choose to use external LLM providers:
-- **Anthropic Claude**: Subject to Anthropic's privacy policy
-- **Groq**: Subject to Groq's privacy policy
-- **Local Ollama**: Processed entirely on your device
-
-### Analytics Service (Optional)
-- **PostHog**: Used for usage analytics when enabled
-- **Data**: Only anonymized usage patterns, no meeting content
-- **Control**: Completely optional, off by default, and user-controlled
-
-## Your Privacy Rights
-
-### Data Control
-- **Access**: View all data stored locally on your device
-- **Export**: Export your data in standard formats
-- **Delete**: Remove all data from your device
-
-
-### Analytics Transparency
-- **Open source**: Full analytics implementation available for review in our source code
-- **Opt-in**: New and existing installs have analytics disabled until you turn it on
-- **Questions**: Contact us for any analytics-related concerns
+If you only ever use local providers, no meeting content ever leaves your computer.
 
 ## Data Security
 
-### Local Security
-- Data encrypted at rest using your device's security features
-- No transmission of sensitive meeting data
-- Standard file system permissions protect your data
+- Data is stored locally using your device's file system permissions.
+- No transmission of meeting data except to an LLM provider you explicitly choose.
+- Full source code is available for review — you can verify every one of these claims.
 
-### Open Source Transparency
-- Full source code available for security review
-- Community-audited privacy implementations
-- No hidden data collection or tracking
-
-## Changes to This Policy
-
-We will notify users of any material changes to this privacy policy through:
-- Updates to this document in our GitHub repository
-- Release notes for application updates
-- In-app notifications for significant privacy changes
-
-## Contact Us
+## Contact
 
 For privacy-related questions or concerns:
 - **GitHub Issues**: [Create an issue](https://github.com/RenzoBeux/meetily/issues)
 
 ## Open Source Commitment
 
-As an open-source project under MIT license, you can:
-- Review our complete privacy implementation
-- Modify data handling to meet your requirements
-- Deploy entirely on your own infrastructure
-- Contribute to privacy improvements
-
----
-
-*This privacy policy applies to Meetily v0.0.5 and later versions. For enterprise deployments, additional privacy controls may be available.*
+As an open-source project under the MIT license, you can review the complete implementation, verify there is no data collection, modify data handling to meet your requirements, and deploy entirely on your own infrastructure.

@@ -3,7 +3,6 @@ import { Transcript, Summary } from '@/types';
 import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
 import { toast } from 'sonner';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
-import Analytics from '@/lib/analytics';
 import {
   fetchAllTranscripts,
   buildTranscriptMarkdown,
@@ -30,8 +29,6 @@ export function useExportOperations({
 
   const handleExportMarkdown = useCallback(async (scope: ExportScope) => {
     try {
-      Analytics.trackButtonClick(`export_markdown_${scope}`, 'meeting_details');
-
       let allTranscripts: Transcript[] = [];
       if (scope === 'transcript' || scope === 'both') {
         try {

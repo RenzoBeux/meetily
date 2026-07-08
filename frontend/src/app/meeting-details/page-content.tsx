@@ -3,7 +3,6 @@ import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Summary, SummaryResponse, Transcript } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
-import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
@@ -147,11 +146,6 @@ export default function PageContent({
   const meetingOperations = useMeetingOperations({
     meeting,
   });
-
-  // Track page view
-  useEffect(() => {
-    Analytics.trackPageView('meeting_details');
-  }, []);
 
   // Auto-generate summary when flag is set
   useEffect(() => {
