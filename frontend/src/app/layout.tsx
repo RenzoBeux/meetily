@@ -5,8 +5,10 @@ import { Inter, JetBrains_Mono } from 'next/font/google'
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
-import { Toaster, toast } from 'sonner'
+import { toast } from 'sonner'
 import "sonner/dist/styles.css"
+import { ThemeProvider } from 'next-themes'
+import { ThemeSync, ThemedToaster } from '@/components/ThemeSync'
 import { useState, useEffect, useCallback } from 'react'
 import { listen, UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
@@ -245,8 +247,16 @@ export default function RootLayout({
   }
 
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased`}>
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="dark"
+          enableSystem
+          storageKey="meetily-theme"
+          disableTransitionOnChange
+        >
+        <ThemeSync />
         <RecordingStateProvider>
           <TranscriptProvider>
             <ConfigProvider>
@@ -286,7 +296,8 @@ export default function RootLayout({
           </TranscriptProvider>
         </RecordingStateProvider>
 
-        <Toaster position="bottom-center" richColors closeButton />
+        <ThemedToaster />
+        </ThemeProvider>
       </body>
     </html>
   )

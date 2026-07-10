@@ -2,9 +2,46 @@
 
 import { useEffect, useState } from "react"
 import { Switch } from "./ui/switch"
-import { FolderOpen } from "lucide-react"
+import { FolderOpen, Monitor, Sun, Moon } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
+import { useTheme } from "next-themes"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
+
+const THEME_OPTIONS = [
+  { value: 'system', label: 'System', icon: Monitor },
+  { value: 'light', label: 'Light', icon: Sun },
+  { value: 'dark', label: 'Dark', icon: Moon },
+] as const;
+
+function AppearanceSelector() {
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  // useTheme() is undefined until hydration; render the control only after mount
+  useEffect(() => setMounted(true), []);
+
+  return (
+    <div className="inline-flex rounded-lg border border-border bg-muted p-1">
+      {THEME_OPTIONS.map(({ value, label, icon: Icon }) => {
+        const active = mounted && theme === value;
+        return (
+          <button
+            key={value}
+            onClick={() => setTheme(value)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md transition-colors ${
+              active
+                ? 'bg-elevated text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Icon className="w-4 h-4" />
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 export function PreferenceSettings() {
   const {
@@ -110,6 +147,17 @@ export function PreferenceSettings() {
 
   return (
     <div className="space-y-6">
+      {/* Appearance Section */}
+      <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Appearance</h3>
+            <p className="text-sm text-gray-600">Choose how Meetily looks, or follow your system setting</p>
+          </div>
+          <AppearanceSelector />
+        </div>
+      </div>
+
       {/* Notifications Section */}
       <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
         <div className="flex items-center justify-between">

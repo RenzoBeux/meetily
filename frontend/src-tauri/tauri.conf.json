@@ -19,7 +19,7 @@
                 "minHeight": 420,
                 "resizable": true,
                 "fullscreen": false,
-                "theme": "Light",
+                "backgroundColor": "#111113",
                 "decorations": true
             }
         ],
@@ -62,6 +62,7 @@
                         "core:menu:default",
                         "core:tray:default",
                         "core:window:allow-set-title",
+                        "core:window:allow-set-theme",
                         "store:default",
                         "notification:default",
                         "notification:allow-is-permission-granted",

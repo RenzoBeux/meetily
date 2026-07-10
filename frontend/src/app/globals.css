@@ -277,4 +277,40 @@
   [data-node-type] {
     overflow: visible !important;
   }
+
+  /*
+   * Theme bridge: @blocknote/shadcn re-declares the shadcn tokens scoped under
+   * .bn-shadcn / .bn-shadcn.dark, so the editor would ignore our palette. The
+   * doubled class out-specifies the package's blocks regardless of CSS import
+   * order, and `inherit` pulls each var's value back in from the app scope.
+   */
+  .bn-shadcn.bn-shadcn,
+  .bn-shadcn.bn-shadcn.dark {
+    --background: inherit;
+    --foreground: inherit;
+    --card: inherit;
+    --card-foreground: inherit;
+    --popover: inherit;
+    --popover-foreground: inherit;
+    --primary: inherit;
+    --primary-foreground: inherit;
+    --secondary: inherit;
+    --secondary-foreground: inherit;
+    --muted: inherit;
+    --muted-foreground: inherit;
+    --accent: inherit;
+    --accent-foreground: inherit;
+    --destructive: inherit;
+    --destructive-foreground: inherit;
+    --border: inherit;
+    --input: inherit;
+    --ring: inherit;
+    --radius: inherit;
+    font-family: var(--font-inter), system-ui, sans-serif;
+  }
+
+  /* The package ships its own Preflight with a hardcoded light border color. */
+  .bn-shadcn.bn-shadcn * {
+    border-color: hsl(var(--border));
+  }
 }
