@@ -1,8 +1,11 @@
 // Retranscription module - allows re-processing stored audio with different settings
 
-use crate::audio::decoder::{decode_audio_file, DecodedAudio};
+use crate::audio::decoder::decode_audio_file;
 use crate::audio::vad::get_speech_chunks_with_progress;
-use super::common::{create_transcript_segments_with_speakers, split_segment_at_silence, write_transcripts_json};
+use super::common::{
+    build_channel_jobs, create_transcript_segments_with_speakers, split_segment_at_silence,
+    write_transcripts_json, ChannelLayout,
+};
 use super::constants::AUDIO_EXTENSIONS;
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
 use crate::parakeet_engine::ParakeetEngine;
@@ -87,13 +90,14 @@ pub fn cancel_retranscription() {
 }
 
 /// Start retranscription of a meeting's audio
-pub async fn start_retranscription<R: Runtime>(
+pub(crate) async fn start_retranscription<R: Runtime>(
     app: AppHandle<R>,
     meeting_id: String,
     meeting_folder_path: String,
     language: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    channel_layout: ChannelLayout,
 ) -> Result<RetranscriptionResult> {
     // Acquire guard - ensures flag is cleared even on panic/early return
     let _guard = RetranscriptionGuard::acquire().map_err(|e| anyhow!(e))?;
@@ -102,7 +106,7 @@ pub async fn start_retranscription<R: Runtime>(
     RETRANSCRIPTION_CANCELLED.store(false, Ordering::SeqCst);
 
     let use_parakeet = provider.as_deref() == Some("parakeet");
-    let result = run_retranscription(app.clone(), meeting_id.clone(), meeting_folder_path, language, model, provider).await;
+    let result = run_retranscription(app.clone(), meeting_id.clone(), meeting_folder_path, language, model, provider, channel_layout).await;
 
     // Unload the engine after the batch job (success, failure, or cancellation)
     super::common::unload_engine_after_batch(use_parakeet).await;
@@ -176,6 +180,7 @@ async fn run_retranscription<R: Runtime>(
     language: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    channel_layout: ChannelLayout,
 ) -> Result<RetranscriptionResult> {
     let folder_path = PathBuf::from(&meeting_folder_path);
     let audio_path = find_audio_file(&folder_path)?;
@@ -217,44 +222,17 @@ async fn run_retranscription<R: Runtime>(
         return Err(anyhow!("Retranscription cancelled"));
     }
 
-    // Build the list of channels to transcribe.
+    // Build the list of channels to transcribe from the requested layout.
     //
-    // Stereo recordings store Left = mic ("you") and Right = system ("them").
-    // Transcribing each channel independently recovers the speaker split
-    // deterministically from channel origin — no acoustic diarization needed.
-    // Mono files (legacy recordings or imported audio) have no source split, so
-    // they transcribe as a single untagged channel (speaker = NULL).
-    let channels: Vec<(Vec<f32>, Option<&'static str>)> = if decoded.channels >= 2 {
-        info!("Stereo recording: splitting L=mic / R=system for per-channel retranscription");
-        let src_channels = decoded.channels;
-        let src_rate = decoded.sample_rate;
-        let mic_decoded = DecodedAudio {
-            samples: extract_channel(&decoded.samples, src_channels, 0),
-            sample_rate: src_rate,
-            channels: 1,
-            duration_seconds,
-        };
-        let sys_decoded = DecodedAudio {
-            samples: extract_channel(&decoded.samples, src_channels, 1),
-            sample_rate: src_rate,
-            channels: 1,
-            duration_seconds,
-        };
-        drop(decoded); // release the interleaved buffer before resampling each channel
-
-        let mic_16k = tokio::task::spawn_blocking(move || mic_decoded.to_whisper_format())
+    // `Separate` splits a two-channel recording into you (mic) / them (system)
+    // and transcribes each independently — the speaker split falls out of
+    // channel origin, no acoustic diarization needed. `Mixed` (or a mono file)
+    // transcribes a single untagged channel (speaker = NULL). See
+    // `common::build_channel_jobs`.
+    let channels: Vec<(Vec<f32>, Option<&'static str>)> =
+        tokio::task::spawn_blocking(move || build_channel_jobs(decoded, channel_layout))
             .await
-            .map_err(|e| anyhow!("Mic resample task panicked: {}", e))?;
-        let sys_16k = tokio::task::spawn_blocking(move || sys_decoded.to_whisper_format())
-            .await
-            .map_err(|e| anyhow!("System resample task panicked: {}", e))?;
-        vec![(mic_16k, Some("mic")), (sys_16k, Some("system"))]
-    } else {
-        let mono_16k = tokio::task::spawn_blocking(move || decoded.to_whisper_format())
-            .await
-            .map_err(|e| anyhow!("Resample task panicked: {}", e))?;
-        vec![(mono_16k, None)]
-    };
+            .map_err(|e| anyhow!("Channel preparation task panicked: {}", e))?;
 
     // Check for cancellation
     if RETRANSCRIPTION_CANCELLED.load(Ordering::SeqCst) {
@@ -399,21 +377,6 @@ async fn run_retranscription<R: Runtime>(
         duration_seconds,
         language,
     })
-}
-
-/// Deinterleave one channel from interleaved multi-channel samples.
-/// For our stereo recordings: `channel_index` 0 = Left (mic), 1 = Right (system).
-fn extract_channel(interleaved: &[f32], channels: u16, channel_index: usize) -> Vec<f32> {
-    let ch = (channels as usize).max(1);
-    if channel_index >= ch {
-        return Vec::new();
-    }
-    interleaved
-        .iter()
-        .skip(channel_index)
-        .step_by(ch)
-        .copied()
-        .collect()
 }
 
 /// Transcribe a single already-16kHz-mono channel: VAD → split long segments →
@@ -827,12 +790,22 @@ pub async fn start_retranscription_command<R: Runtime>(
     language: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    separate_channels: Option<bool>,
+    you_channel: Option<u32>,
 ) -> Result<RetranscriptionStarted, String> {
 
     // Check if retranscription is already in progress (guard will be acquired in start_retranscription)
     if RETRANSCRIPTION_IN_PROGRESS.load(Ordering::SeqCst) {
         return Err("Retranscription already in progress".to_string());
     }
+
+    let channel_layout = if separate_channels.unwrap_or(false) {
+        ChannelLayout::Separate {
+            you_channel: you_channel.unwrap_or(0) as usize,
+        }
+    } else {
+        ChannelLayout::Mixed
+    };
 
     // Clone values for the spawned task
     let meeting_id_clone = meeting_id.clone();
@@ -846,6 +819,7 @@ pub async fn start_retranscription_command<R: Runtime>(
             language,
             model,
             provider,
+            channel_layout,
         )
         .await;
 
@@ -860,6 +834,23 @@ pub async fn start_retranscription_command<R: Runtime>(
         meeting_id,
         message: "Retranscription started".to_string(),
     })
+}
+
+/// Probe the channel count of a meeting's audio file. The retranscribe dialog
+/// uses this to decide whether to offer the "separate speaker channels" toggle.
+#[tauri::command]
+pub async fn get_meeting_audio_channels(meeting_folder_path: String) -> Result<u16, String> {
+    let folder = PathBuf::from(&meeting_folder_path);
+    let audio_path = find_audio_file(&folder).map_err(|e| e.to_string())?;
+    let channels = tokio::task::spawn_blocking(move || {
+        crate::audio::decoder::probe_channel_count(&audio_path)
+    })
+    .await
+    .map_err(|e| format!("Channel probe task panicked: {e}"))?
+    // Unknown container (e.g. mkv/webm) → treat as mono; the toggle simply
+    // won't be offered.
+    .unwrap_or(1);
+    Ok(channels)
 }
 
 #[tauri::command]

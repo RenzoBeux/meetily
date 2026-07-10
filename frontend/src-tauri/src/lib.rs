@@ -547,6 +547,12 @@ pub fn run() {
             diarization::commands::diarization_models_status,
             diarization::commands::get_runtime_acceleration,
             diarization::commands::rediarize_meeting,
+            diarization::commands::list_speaker_samples,
+            diarization::commands::get_audio_clip,
+            diarization::commands::prewarm_audio_clip_cache,
+            diarization::commands::rename_meeting_speaker,
+            diarization::commands::clear_audio_clip_cache,
+            diarization::commands::meeting_has_mic_channel,
             // Parakeet engine commands
             parakeet_engine::commands::parakeet_init,
             parakeet_engine::commands::parakeet_get_available_models,
@@ -733,6 +739,7 @@ pub fn run() {
             // Retranscription commands
             audio::retranscription::start_retranscription_command,
             audio::retranscription::cancel_retranscription_command,
+            audio::retranscription::get_meeting_audio_channels,
             audio::retranscription::is_retranscription_in_progress_command,
             // Import audio commands
             audio::import::select_and_validate_audio_command,

@@ -1,8 +1,80 @@
 use crate::api::TranscriptSegment;
+use crate::audio::decoder::DecodedAudio;
 use anyhow::Result;
 use log::{debug, info};
 use std::path::Path;
 use uuid::Uuid;
+
+/// How to interpret a decoded file's channels when transcribing.
+///
+/// This is the single source of truth for the "you / them by channel" split,
+/// shared by both the import and retranscription pipelines.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ChannelLayout {
+    /// Downmix every channel to one mono stream; segments are left untagged
+    /// (speaker = NULL). Diarization can be run later to recover speakers.
+    Mixed,
+    /// Two-channel "you / them" split. The `you_channel` (0 = Left, 1 = Right)
+    /// is tagged `"mic"`; the other channel is tagged `"system"`. Falls back to
+    /// `Mixed` behaviour when the decoded audio turns out to be mono.
+    Separate { you_channel: usize },
+}
+
+/// Deinterleave one channel from interleaved multi-channel samples.
+pub(crate) fn extract_channel(interleaved: &[f32], channels: u16, channel_index: usize) -> Vec<f32> {
+    let ch = (channels as usize).max(1);
+    if channel_index >= ch {
+        return Vec::new();
+    }
+    interleaved
+        .iter()
+        .skip(channel_index)
+        .step_by(ch)
+        .copied()
+        .collect()
+}
+
+/// Turn a decoded file into one or more 16 kHz-mono transcription jobs, each
+/// paired with its source speaker tag (`Some("mic")` / `Some("system")` for a
+/// channel-separated recording, or `None` for a mixed one).
+///
+/// Resampling is the heavy part — call this inside `spawn_blocking`.
+pub(crate) fn build_channel_jobs(
+    decoded: DecodedAudio,
+    layout: ChannelLayout,
+) -> Vec<(Vec<f32>, Option<&'static str>)> {
+    match layout {
+        ChannelLayout::Separate { you_channel } if decoded.channels >= 2 => {
+            let src_channels = decoded.channels;
+            let src_rate = decoded.sample_rate;
+            let dur = decoded.duration_seconds;
+            let you_channel = you_channel.min(1);
+            let them_channel = 1 - you_channel;
+            info!(
+                "Channel split: you = ch{} (mic), them = ch{} (system)",
+                you_channel, them_channel
+            );
+            let you = DecodedAudio {
+                samples: extract_channel(&decoded.samples, src_channels, you_channel),
+                sample_rate: src_rate,
+                channels: 1,
+                duration_seconds: dur,
+            };
+            let them = DecodedAudio {
+                samples: extract_channel(&decoded.samples, src_channels, them_channel),
+                sample_rate: src_rate,
+                channels: 1,
+                duration_seconds: dur,
+            };
+            drop(decoded);
+            vec![
+                (you.to_whisper_format(), Some("mic")),
+                (them.to_whisper_format(), Some("system")),
+            ]
+        }
+        _ => vec![(decoded.to_whisper_format(), None)],
+    }
+}
 
 /// Unload the transcription engine after a batch job (import or retranscription).
 /// Skips unloading if a live recording is currently in progress, since recording
@@ -36,6 +108,9 @@ pub(crate) async fn unload_engine_after_batch(use_parakeet: bool) {
 
 /// Create transcript segments from transcription results.
 /// Each tuple is (text, start_ms, end_ms) from VAD timestamps.
+/// Retained for unit tests; production paths now tag segments per channel via
+/// [`create_transcript_segments_with_speakers`].
+#[allow(dead_code)]
 pub(crate) fn create_transcript_segments(transcripts: &[(String, f64, f64)]) -> Vec<TranscriptSegment> {
     transcripts
         .iter()

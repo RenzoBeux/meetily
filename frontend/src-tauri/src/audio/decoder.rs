@@ -393,6 +393,86 @@ pub fn decode_audio_file(path: &Path) -> Result<DecodedAudio> {
     decode_audio_file_with_progress(path, None)
 }
 
+/// Probe an audio file's channel count without a full decode.
+///
+/// Container metadata (`codec_params.channels`) is unreliable for AAC in MP4 —
+/// it is frequently absent, so a stereo recording reads as 1 channel. We trust
+/// metadata only when it clearly reports 2+ channels; otherwise we decode a
+/// single packet and read the true channel count from the decoded spec (the
+/// same source `decode_audio_file` uses to correct the count).
+///
+/// Returns `Err` for containers Symphonia can't demux (mkv/webm/wma); callers
+/// should treat that as "unknown" (mono / no channel toggle).
+pub fn probe_channel_count(path: &Path) -> Result<u16> {
+    use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let file = std::fs::File::open(path)
+        .map_err(|e| anyhow!("Failed to open audio file '{}': {}", path.display(), e))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| anyhow!("Failed to probe audio format: {}", e))?;
+    let mut format = probed.format;
+
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or_else(|| anyhow!("No audio track found in file"))?;
+    let track_id = track.id;
+
+    // Trust metadata only when it clearly reports 2+ channels.
+    if let Some(ch) = track.codec_params.channels {
+        let n = ch.count() as u16;
+        if n >= 2 {
+            return Ok(n);
+        }
+    }
+
+    // Otherwise decode a single packet to read the true channel count.
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| anyhow!("Failed to create decoder: {}", e))?;
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(symphonia::core::errors::Error::IoError(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            Err(e) => return Err(anyhow!("Error reading packet: {}", e)),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(decoded) => return Ok((decoded.spec().channels.count() as u16).max(1)),
+            // Some codecs emit a decode error on the first packet before syncing.
+            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
+            Err(e) => return Err(anyhow!("Decode error: {}", e)),
+        }
+    }
+
+    Ok(1)
+}
+
 /// Decode an audio file with optional progress callback
 pub fn decode_audio_file_with_progress(
     path: &Path,

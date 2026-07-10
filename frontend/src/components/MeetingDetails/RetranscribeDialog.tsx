@@ -63,6 +63,10 @@ export function RetranscribeDialog({
   const [error, setError] = useState<string | null>(null);
   const [selectedLang, setSelectedLang] = useState(selectedLanguage || 'auto');
   const [showConfirm, setShowConfirm] = useState(false);
+  // Channel-separation ("you / them on separate L/R channels") toggle.
+  const [channels, setChannels] = useState(0);
+  const [separateChannels, setSeparateChannels] = useState(false);
+  const [youChannel, setYouChannel] = useState(0); // 0 = Left, 1 = Right
 
   // Use centralized model fetching hook
   const {
@@ -113,11 +117,22 @@ export function RetranscribeDialog({
       setError(null);
       setShowConfirm(false);
       setSelectedLang(selectedLanguage || 'auto');
+      setSeparateChannels(false);
+      setYouChannel(0);
+      setChannels(0);
+
+      // Probe the audio's channel count so we can offer the "separate speaker
+      // channels" toggle for stereo recordings.
+      if (meetingFolderPath) {
+        invoke<number>('get_meeting_audio_channels', { meetingFolderPath })
+          .then((c) => setChannels(c))
+          .catch(() => setChannels(0));
+      }
 
       // Fetch available models using centralized hook
       fetchModels();
     }
-  }, [open, selectedLanguage, transcriptModelConfig, fetchModels]);
+  }, [open, selectedLanguage, transcriptModelConfig, fetchModels, meetingFolderPath]);
 
   // Listen for retranscription events
   useEffect(() => {
@@ -208,6 +223,8 @@ export function RetranscribeDialog({
         language: languageToSend,
         model: selectedModelDetails?.name || null,
         provider: selectedModelDetails?.provider || null,
+        separateChannels: channels >= 2 ? separateChannels : false,
+        youChannel,
       });
     } catch (err: any) {
       setIsProcessing(false);
@@ -343,6 +360,55 @@ export function RetranscribeDialog({
               <p className="text-xs text-muted-foreground">
                 Choose a transcription model
               </p>
+            </div>
+          )}
+
+          {!isProcessing && !error && channels >= 2 && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3 space-y-2">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={separateChannels}
+                  onChange={(e) => setSeparateChannels(e.target.checked)}
+                />
+                <span className="text-sm">
+                  Separate speaker channels
+                  <span className="block text-xs text-muted-foreground">
+                    This recording has you and the others on separate left/right
+                    channels. Each channel is transcribed and labelled (You / Others)
+                    independently — no diarization needed. Leave off for a normal
+                    stereo mix.
+                  </span>
+                </span>
+              </label>
+              {separateChannels && (
+                <div className="pl-6 space-y-1">
+                  <span className="block text-xs font-medium text-gray-700">
+                    Which channel is you?
+                  </span>
+                  <div className="flex gap-4">
+                    <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                      <input
+                        type="radio"
+                        name="retranscribe-you-channel"
+                        checked={youChannel === 0}
+                        onChange={() => setYouChannel(0)}
+                      />
+                      Left
+                    </label>
+                    <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                      <input
+                        type="radio"
+                        name="retranscribe-you-channel"
+                        checked={youChannel === 1}
+                        onChange={() => setYouChannel(1)}
+                      />
+                      Right
+                    </label>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

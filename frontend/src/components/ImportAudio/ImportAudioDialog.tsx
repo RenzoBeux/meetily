@@ -78,6 +78,9 @@ export function ImportAudioDialog({
   const [selectedLang, setSelectedLang] = useState(selectedLanguage || 'auto');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [titleModifiedByUser, setTitleModifiedByUser] = useState(false);
+  // "This audio has you / them on separate L/R channels" toggle (stereo only).
+  const [separateChannels, setSeparateChannels] = useState(false);
+  const [youChannel, setYouChannel] = useState(0); // 0 = Left, 1 = Right
 
   // Always start as false — represents "dialog has not yet been opened".
   // Do NOT initialize from the `open` prop: if the component mounts with open=true
@@ -139,6 +142,8 @@ export function ImportAudioDialog({
       setTitleModifiedByUser(false);
       setSelectedLang(selectedLanguage || 'auto');
       setShowAdvanced(false);
+      setSeparateChannels(false);
+      setYouChannel(0);
 
       // Validate preselected file if provided
       if (preselectedFile) {
@@ -178,6 +183,9 @@ export function ImportAudioDialog({
   }, [isParakeetModel, selectedLang]);
 
   const handleSelectFile = async () => {
+    // A new file may have a different channel layout — reset the toggle.
+    setSeparateChannels(false);
+    setYouChannel(0);
     const info = await selectFile();
     if (info) {
       setTitle(info.filename);
@@ -187,12 +195,15 @@ export function ImportAudioDialog({
   const handleStartImport = async () => {
     if (!fileInfo) return;
 
+    const isStereo = fileInfo.channels >= 2;
     await startImport(
       fileInfo.path,
       title || fileInfo.filename,
       isParakeetModel ? null : selectedLang === 'auto' ? null : selectedLang,
       selectedModel?.name || null,
-      selectedModel?.provider || null
+      selectedModel?.provider || null,
+      isStereo ? separateChannels : false,
+      youChannel
     );
   };
 
@@ -322,6 +333,56 @@ export function ImportAudioDialog({
                     )}
                   </Button>
                   <p className="text-sm text-gray-500 mt-2">MP4, WAV, MP3, FLAC, OGG, MKV, WebM, WMA</p>
+                </div>
+              )}
+
+              {/* Separate speaker channels (stereo only) */}
+              {fileInfo && fileInfo.channels >= 2 && (
+                <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3 space-y-2">
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={separateChannels}
+                      onChange={(e) => setSeparateChannels(e.target.checked)}
+                    />
+                    <span className="text-sm">
+                      Separate speaker channels
+                      <span className="block text-xs text-muted-foreground">
+                        This recording has you and the others on separate left/right
+                        channels. Each channel is transcribed and labelled (You / Others)
+                        independently — no diarization needed. Leave off for a normal
+                        stereo mix.
+                      </span>
+                    </span>
+                  </label>
+                  {separateChannels && (
+                    <div className="pl-6 space-y-1">
+                      <span className="block text-xs font-medium text-gray-700">
+                        Which channel is you?
+                      </span>
+                      <div className="flex gap-4">
+                        <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                          <input
+                            type="radio"
+                            name="import-you-channel"
+                            checked={youChannel === 0}
+                            onChange={() => setYouChannel(0)}
+                          />
+                          Left
+                        </label>
+                        <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                          <input
+                            type="radio"
+                            name="import-you-channel"
+                            checked={youChannel === 1}
+                            onChange={() => setYouChannel(1)}
+                          />
+                          Right
+                        </label>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

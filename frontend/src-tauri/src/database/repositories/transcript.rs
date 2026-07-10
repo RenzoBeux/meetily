@@ -141,6 +141,34 @@ impl TranscriptsRepository {
         Ok(affected)
     }
 
+    /// Rename every transcript row of a meeting currently tagged `from_speaker`
+    /// to `to_speaker`. Used by the post-diarization "name speakers" step to
+    /// turn a cluster tag (e.g. "speaker_1") into a human label in one atomic
+    /// UPDATE. Returns the number of rows changed.
+    pub async fn rename_speaker(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        from_speaker: &str,
+        to_speaker: &str,
+    ) -> Result<usize, SqlxError> {
+        let result = sqlx::query(
+            "UPDATE transcripts SET speaker = ? WHERE meeting_id = ? AND speaker = ?",
+        )
+        .bind(to_speaker)
+        .bind(meeting_id)
+        .bind(from_speaker)
+        .execute(pool)
+        .await?;
+        info!(
+            "Renamed speaker '{}' -> '{}' on {} rows in meeting {}",
+            from_speaker,
+            to_speaker,
+            result.rows_affected(),
+            meeting_id
+        );
+        Ok(result.rows_affected() as usize)
+    }
+
     /// Update the `transcript` (text) column for a single segment.
     /// Returns true if a row matched the id.
     pub async fn update_segment_text(

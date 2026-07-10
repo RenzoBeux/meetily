@@ -3,9 +3,11 @@
 //
 // Nothing is bundled with the installer. On first use we download the `uv`
 // binary (~15 MB), and `uv run` provisions a cached Python environment with
-// pyannote.audio (~1–2 GB incl. torch) plus the gated community-1 model from
-// Hugging Face (requires the user's HF token). Everything lands under
-// <app_data_dir>/diarization-pro/ so uninstalling the app removes it.
+// pyannote.audio plus a PyTorch build matched to the machine (CPU-only is
+// ~1–2 GB; a CUDA wheel for GPU is larger, ~2.5–3.5 GB) plus the gated
+// community-1 model from Hugging Face (requires the user's HF token).
+// Everything lands under <app_data_dir>/diarization-pro/ so uninstalling the
+// app removes it.
 //
 // The sidecar is spawned per job and prints segments JSON on stdout — being a
 // subprocess, a native crash there costs one job, not the app (unlike the
@@ -25,7 +27,10 @@ use crate::diarization::engine::DiarSegment;
 use crate::diarization::models::download_file;
 use crate::diarization::remote::{map_remote_segments, RemoteSegment};
 
-const PYANNOTE_SPEC: &str = "pyannote.audio>=4.0,<5";
+// Dependencies (pyannote.audio, soundfile) and the `torch-backend = "auto"`
+// GPU selection live in the PEP 723 inline metadata at the top of
+// localpro_diarize.py, so `uv run` resolves everything straight from the
+// script — no --with flags needed here.
 const PYTHON_VERSION: &str = "3.12";
 const SIDECAR_SCRIPT: &str = include_str!("localpro_diarize.py");
 // First run: ~1–2 GB env + model download, then CPU/MPS inference. Generous.
@@ -192,14 +197,17 @@ pub async fn run_local_pro<R: Runtime>(
         .arg("--no-project")
         .arg("--python")
         .arg(PYTHON_VERSION)
-        .arg("--with")
-        .arg(PYANNOTE_SPEC)
         .arg(&script)
         .arg(&job_args)
         .env("HF_TOKEN", hf_token)
         .env("UV_CACHE_DIR", dir.join("uv-cache"))
         .env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
         .env("HF_HOME", dir.join("hf-cache"))
+        // On macOS the pipeline runs on the Metal (MPS) backend; if it hits an
+        // op MPS hasn't implemented yet, fall back to CPU for that op instead
+        // of crashing the job. No-op on Windows/Linux (torch ignores it when
+        // not using MPS).
+        .env("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -209,7 +217,7 @@ pub async fn run_local_pro<R: Runtime>(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    info!("Spawning Local Pro diarization sidecar (uv run --with {PYANNOTE_SPEC})");
+    info!("Spawning Local Pro diarization sidecar (uv run; deps + torch-backend from inline script metadata)");
     let mut child = cmd.spawn().context(
         "Failed to start the local diarization sidecar. If this persists, delete the \
          'diarization-pro' folder in the app data directory and try again.",

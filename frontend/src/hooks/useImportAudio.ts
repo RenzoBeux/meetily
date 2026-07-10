@@ -8,6 +8,8 @@ export interface AudioFileInfo {
   duration_seconds: number;
   size_bytes: number;
   format: string;
+  /** Number of audio channels. `>= 2` unlocks the "separate speaker channels" toggle. */
+  channels: number;
 }
 
 export interface ImportProgress {
@@ -48,7 +50,9 @@ export interface UseImportAudioReturn {
     title: string,
     language?: string | null,
     model?: string | null,
-    provider?: string | null
+    provider?: string | null,
+    separateChannels?: boolean,
+    youChannel?: number
   ) => Promise<void>;
   cancelImport: () => Promise<void>;
   reset: () => void;
@@ -189,7 +193,9 @@ export function useImportAudio({
       title: string,
       language?: string | null,
       model?: string | null,
-      provider?: string | null
+      provider?: string | null,
+      separateChannels?: boolean,
+      youChannel?: number
     ) => {
       isCancelledRef.current = false;
       setStatus('processing');
@@ -203,6 +209,8 @@ export function useImportAudio({
           language: language || null,
           model: model || null,
           provider: provider || null,
+          separateChannels: separateChannels ?? false,
+          youChannel: youChannel ?? 0,
         });
       } catch (err: any) {
         setStatus('error');

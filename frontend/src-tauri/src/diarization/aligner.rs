@@ -24,9 +24,13 @@ const MIN_OVERLAP_RATIO: f64 = 0.20;
 /// the UI; diarization must never overwrite it.
 const MIC_SPEAKER: &str = "mic";
 
-pub fn assign_speakers(transcript: &mut [TranscriptSegment], diar: &[DiarSegment]) {
+/// Returns the number of distinct diarization clusters that were actually
+/// assigned to at least one transcript segment. Comparing this against the
+/// user-requested speaker count tells whether a cluster went entirely
+/// unmatched (all of its speech fell below the overlap threshold).
+pub fn assign_speakers(transcript: &mut [TranscriptSegment], diar: &[DiarSegment]) -> usize {
     if diar.is_empty() {
-        return;
+        return 0;
     }
 
     // Pass 1: for each eligible (non-mic) segment, resolve the dominant
@@ -70,6 +74,7 @@ pub fn assign_speakers(transcript: &mut [TranscriptSegment], diar: &[DiarSegment
         });
         seg.speaker = format!("speaker_{}", label);
     }
+    next - 1
 }
 
 pub fn unique_speakers(transcript: &[TranscriptSegment]) -> Vec<String> {
@@ -186,6 +191,17 @@ mod tests {
         assert_eq!(tx[0].speaker, "speaker_1");
         assert_eq!(tx[1].speaker, "speaker_2");
         assert_eq!(tx[2].speaker, "speaker_1");
+    }
+
+    #[test]
+    fn returns_count_of_clusters_that_landed() {
+        let mut tx = vec![t(0.0, 2.0, "system"), t(2.0, 4.0, "system")];
+        // Clusters 1 and 2 land on rows; cluster 9 overlaps nothing.
+        let n = assign_speakers(&mut tx, &[d(0.0, 2.0, 1), d(2.0, 4.0, 2), d(10.0, 12.0, 9)]);
+        assert_eq!(n, 2);
+        // No cluster landing at all reports zero.
+        let mut tx2 = vec![t(0.0, 10.0, "system")];
+        assert_eq!(assign_speakers(&mut tx2, &[d(9.9, 10.0, 1)]), 0);
     }
 
     #[test]
