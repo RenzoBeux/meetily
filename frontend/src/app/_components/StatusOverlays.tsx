@@ -20,12 +20,11 @@ function StatusOverlay({ show, message, sidebarCollapsed }: StatusOverlayProps) 
   return (
     <div className="fixed bottom-4 left-0 right-0 z-10">
       <div
-        className="flex justify-center pl-8 transition-[margin] duration-300"
-        style={{
-          marginLeft: sidebarCollapsed ? '4rem' : '16rem'
-        }}
+        className={`flex justify-center pl-3 md:pl-8 transition-[margin] duration-300 ${
+          sidebarCollapsed ? 'ml-16' : 'ml-16 md:ml-64'
+        }`}
       >
-        <div className="w-2/3 max-w-[750px] flex justify-center">
+        <div className="w-full px-4 md:px-0 md:w-2/3 max-w-[750px] flex justify-center">
           <div className="bg-white rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
             <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-900"></div>
             <span className="text-sm text-gray-700">{message}</span>

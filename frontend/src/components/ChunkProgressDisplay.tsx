@@ -149,7 +149,7 @@ export function ChunkProgressDisplay({
       </div>
 
       {/* Processing Stats */}
-      <div className="grid grid-cols-4 gap-4 mb-4 text-sm">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4 text-sm">
         <div className="text-center">
           <div className="text-lg font-semibold text-green-600">
             {progress.completed_chunks}

@@ -90,7 +90,7 @@ export function SettingsModals({
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Summarization Model
                   </label>
-                  <div className="flex space-x-2">
+                  <div className="flex flex-col sm:flex-row gap-2">
                     <select
                       className="px-3 py-2 text-sm bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                       value={modelConfig.provider}
@@ -168,7 +168,7 @@ export function SettingsModals({
     {/* Device Settings Modal */}
     {modals.deviceSettings && (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-xl">
+        <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-xl max-h-[90vh] overflow-y-auto">
           <div className="flex justify-between items-center mb-4">
             <h3 className="text-lg font-semibold text-gray-900">Audio Device Settings</h3>
             <button
@@ -209,7 +209,7 @@ export function SettingsModals({
     {/* Language Settings Modal */}
     {modals.languageSettings && (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-xl">
+        <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-xl max-h-[90vh] overflow-y-auto">
           <div className="flex justify-between items-center mb-4">
             <h3 className="text-lg font-semibold text-gray-900">Language Settings</h3>
             <button
@@ -270,7 +270,7 @@ export function SettingsModals({
           </div>
 
           {/* Fixed Footer */}
-          <div className="p-6 pt-4 border-t border-gray-200 flex items-center justify-between">
+          <div className="p-6 pt-4 border-t border-gray-200 flex flex-wrap items-center justify-between gap-3">
             {/* Confidence Indicator Toggle */}
             <div className="flex items-center gap-3">
               <label className="relative inline-flex items-center cursor-pointer">

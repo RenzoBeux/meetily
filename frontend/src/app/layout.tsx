@@ -75,6 +75,16 @@ export default function RootLayout({
   const [importFilePath, setImportFilePath] = useState<string | null>(null)
 
   useEffect(() => {
+    // Browser preview (pnpm dev opened outside Tauri): there is no backend to
+    // ask, so skip onboarding and render the main shell for UI inspection
+    if (
+      process.env.NODE_ENV === 'development' &&
+      typeof (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ === 'undefined'
+    ) {
+      setOnboardingCompleted(true)
+      return
+    }
+
     // Check onboarding status first
     invoke<{ completed: boolean } | null>('get_onboarding_status')
       .then((status) => {

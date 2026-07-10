@@ -219,12 +219,11 @@ export default function Home() {
           status !== RecordingStatus.SAVING && (
             <div className="fixed bottom-12 left-0 right-0 z-10">
               <div
-                className="flex justify-center pl-8 transition-[margin] duration-300"
-                style={{
-                  marginLeft: sidebarCollapsed ? '4rem' : '16rem'
-                }}
+                className={`flex justify-center pl-3 md:pl-8 transition-[margin] duration-300 ${
+                  sidebarCollapsed ? 'ml-16' : 'ml-16 md:ml-64'
+                }`}
               >
-                <div className="w-2/3 max-w-[750px] flex justify-center">
+                <div className="w-full px-4 md:px-0 md:w-2/3 max-w-[750px] flex justify-center">
                   <div className="bg-white rounded-full shadow-lg flex items-center">
                     <RecordingControls
                       isRecording={recordingState.isRecording}

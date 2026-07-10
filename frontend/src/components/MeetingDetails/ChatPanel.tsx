@@ -315,9 +315,8 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-// Renders assistant markdown with explicit utility classes rather than relying
-// on the `prose` (typography) plugin, since the active Tailwind config between
-// tailwind.config.js / .ts is ambiguous. These core utilities exist in both.
+// Renders assistant markdown with explicit utility classes rather than the
+// `prose` (typography) plugin, for tighter control over chat-bubble spacing.
 const MARKDOWN_COMPONENTS: Parameters<typeof ReactMarkdown>[0]['components'] = {
   p: ({ children }) => <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>,
   ul: ({ children }) => <ul className="mb-2 last:mb-0 list-disc space-y-1 pl-5">{children}</ul>,

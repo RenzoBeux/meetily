@@ -649,6 +649,15 @@ const Sidebar: React.FC = () => {
 
   return (
     <div className="fixed top-0 left-0 h-screen z-40">
+      {/* On small screens the expanded sidebar overlays the content instead of
+          pushing it; this backdrop dims the content and collapses on click */}
+      {!isCollapsed && (
+        <div
+          className="fixed inset-0 bg-black/20 md:hidden"
+          onClick={toggleCollapse}
+        />
+      )}
+
       {/* Floating collapse button */}
       <button
         onClick={toggleCollapse}

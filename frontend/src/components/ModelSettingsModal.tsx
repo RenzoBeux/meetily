@@ -1490,7 +1490,7 @@ export function ModelSettingsModal({
                 )}
               </div>
             ) : !ollamaEndpointChanged && (
-              <ScrollArea className="max-h-[calc(100vh-450px)] overflow-y-auto pr-4">
+              <ScrollArea className="max-h-[max(200px,calc(100vh-450px))] overflow-y-auto pr-4">
                 {filteredModels.length === 0 ? (
                   <Alert>
                     <AlertDescription>
