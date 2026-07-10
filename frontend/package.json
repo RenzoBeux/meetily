@@ -2,7 +2,6 @@
     "name": "meetily",
     "version": "0.6.0",
     "private": true,
-    "main": "electron/main.js",
     "scripts": {
         "dev": "next dev -p 3118",
         "build": "next build && node scripts/stage-sherpa-dlls.mjs",
