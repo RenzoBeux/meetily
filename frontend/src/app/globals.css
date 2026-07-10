@@ -200,6 +200,12 @@
 }
 
 @layer base {
+  :root {
+    /* Set by the Titlebar component when running inside Tauri (2.5rem);
+       stays 0 in browser preview so layout offsets collapse to nothing. */
+    --titlebar-height: 0px;
+  }
+
   * {
     @apply border-border;
   }

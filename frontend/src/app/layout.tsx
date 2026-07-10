@@ -9,6 +9,7 @@ import { toast } from 'sonner'
 import "sonner/dist/styles.css"
 import { ThemeProvider } from 'next-themes'
 import { ThemeSync, ThemedToaster } from '@/components/ThemeSync'
+import { Titlebar } from '@/components/WindowChrome/Titlebar'
 import { useState, useEffect, useCallback } from 'react'
 import { listen, UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
@@ -257,6 +258,9 @@ export default function RootLayout({
           disableTransitionOnChange
         >
         <ThemeSync />
+        {/* Custom window chrome — above the onboarding overlay (z-50) so the
+            window stays draggable/closable during first-run setup */}
+        <Titlebar />
         <RecordingStateProvider>
           <TranscriptProvider>
             <ConfigProvider>

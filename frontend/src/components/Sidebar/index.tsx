@@ -648,7 +648,7 @@ const Sidebar: React.FC = () => {
   };
 
   return (
-    <div className="fixed top-0 left-0 h-screen z-40">
+    <div className="fixed top-[var(--titlebar-height)] left-0 h-[calc(100vh-var(--titlebar-height))] z-40">
       {/* On small screens the expanded sidebar overlays the content instead of
           pushing it; this backdrop dims the content and collapses on click */}
       {!isCollapsed && (
@@ -672,7 +672,7 @@ const Sidebar: React.FC = () => {
       </button>
 
       <div
-        className={`h-screen bg-white border-r shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
+        className={`h-full bg-white border-r shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
           }`}
       >
         {/*  Header with traffic light spacing */}

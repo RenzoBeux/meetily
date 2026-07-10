@@ -12,7 +12,7 @@
     "app": {
         "windows": [
             {
-                "title": "meetily",
+                "title": "Meetily",
                 "width": 1100,
                 "height": 700,
                 "minWidth": 480,
@@ -63,6 +63,13 @@
                         "core:tray:default",
                         "core:window:allow-set-title",
                         "core:window:allow-set-theme",
+                        "core:window:allow-minimize",
+                        "core:window:allow-maximize",
+                        "core:window:allow-unmaximize",
+                        "core:window:allow-toggle-maximize",
+                        "core:window:allow-is-maximized",
+                        "core:window:allow-close",
+                        "core:window:allow-start-dragging",
                         "store:default",
                         "notification:default",
                         "notification:allow-is-permission-granted",
