@@ -77,59 +77,125 @@
 }
 
 @layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 3.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 3.9%;
-    --primary: 0 0% 9%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 0 0% 96.1%;
-    --secondary-foreground: 0 0% 9%;
-    --muted: 0 0% 96.1%;
-    --muted-foreground: 0 0% 45.1%;
-    --accent: 0 0% 96.1%;
-    --accent-foreground: 0 0% 9%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 89.8%;
-    --input: 0 0% 89.8%;
-    --ring: 0 0% 3.9%;
-    --radius: 0.5rem;
-    --chart-1: 12 76% 61%;
-    --chart-2: 173 58% 39%;
-    --chart-3: 197 37% 24%;
-    --chart-4: 43 74% 66%;
-    --chart-5: 27 87% 67%;
+  /*
+   * Meetily brand tokens. Dark is the default theme: :root carries the dark
+   * values so the first CSS paint is dark even before next-themes stamps a
+   * class on <html>. `.dark` duplicates :root; `.light` overrides.
+   */
+  :root,
+  .dark {
+    --background: 240 6% 7%;          /* #111113 */
+    --foreground: 240 6% 93%;         /* #EDEDEF */
+    --card: 240 7% 11%;               /* #1A1A1E surface */
+    --card-foreground: 240 6% 93%;
+    --popover: 240 8% 14%;
+    --popover-foreground: 240 6% 93%;
+    --primary: 247 100% 71%;          /* #7C6CFF */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 6% 15%;
+    --secondary-foreground: 240 6% 93%;
+    --muted: 240 6% 15%;
+    --muted-foreground: 240 4% 64%;   /* #A0A0A8 */
+    --accent: 240 6% 17%;             /* hover wash, not the brand color */
+    --accent-foreground: 240 6% 93%;
+    --destructive: 0 100% 68%;        /* #FF5C5C — danger + recording red */
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 6% 16%;
+    --input: 240 6% 19%;
+    --ring: 247 100% 71%;
+    --radius: 0.625rem;
+
+    /* Brand accent scale (violet). shadcn --accent stays a neutral hover wash. */
+    --brand: 247 100% 71%;
+    --brand-hover: 247 100% 75%;      /* #8F80FF */
+    --brand-active: 247 74% 63%;      /* #6B5AE6 */
+    --brand-foreground: 0 0% 100%;
+
+    /* Surface extensions */
+    --elevated: 240 8% 14%;           /* menus, tooltips, toasts */
+    --overlay: 240 6% 4%;             /* scrims via bg-overlay/60 */
+
+    /* Status */
+    --success: 158 64% 52%;           /* #34D399 */
+    --success-foreground: 240 6% 7%;
+    --warning: 43 96% 56%;            /* #FBBF24 */
+    --warning-foreground: 240 6% 7%;
+
+    /* Scrollbar */
+    --scrollbar-thumb: 240 5% 25%;
+    --scrollbar-thumb-hover: 240 5% 33%;
+
+    /* Charts (violet-anchored categorical set) */
+    --chart-1: 247 90% 70%;
+    --chart-2: 190 85% 55%;
+    --chart-3: 158 60% 50%;
+    --chart-4: 38 92% 58%;
+    --chart-5: 330 80% 65%;
+
+    /* Speaker identity palette — hue-stable across themes, used as
+       bg-speaker-N/15 text-speaker-N. Violet reserved for "You" (mic),
+       red never used for speakers (recording/destructive only). */
+    --speaker-you: 247 95% 74%;
+    --speaker-others: 190 80% 62%;
+    --speaker-1: 152 60% 60%;
+    --speaker-2: 38 90% 62%;
+    --speaker-3: 330 80% 70%;
+    --speaker-4: 210 90% 68%;
+    --speaker-5: 275 80% 72%;
+    --speaker-6: 15 85% 66%;
   }
 
-  .dark {
-    --background: 0 0% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 0 0% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 0 0% 9%;
-    --secondary: 0 0% 14.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 14.9%;
-    --muted-foreground: 0 0% 63.9%;
-    --accent: 0 0% 14.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 14.9%;
-    --input: 0 0% 14.9%;
-    --ring: 0 0% 83.1%;
-    --chart-1: 220 70% 50%;
-    --chart-2: 160 60% 45%;
-    --chart-3: 30 80% 55%;
-    --chart-4: 280 65% 60%;
-    --chart-5: 340 75% 55%;
+  .light {
+    --background: 240 25% 98%;
+    --foreground: 240 6% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 6% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 6% 10%;
+    --primary: 247 75% 59%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 10% 94%;
+    --secondary-foreground: 240 6% 10%;
+    --muted: 240 10% 94%;
+    --muted-foreground: 240 4% 42%;
+    --accent: 240 10% 93%;
+    --accent-foreground: 240 6% 10%;
+    --destructive: 0 72% 51%;         /* #DC2626 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 10% 90%;
+    --input: 240 10% 88%;
+    --ring: 247 75% 59%;
+
+    --brand: 247 75% 59%;
+    --brand-hover: 247 75% 53%;
+    --brand-active: 247 70% 47%;
+    --brand-foreground: 0 0% 100%;
+
+    --elevated: 0 0% 100%;
+    --overlay: 240 6% 10%;
+
+    --success: 161 90% 30%;
+    --success-foreground: 0 0% 100%;
+    --warning: 28 90% 38%;
+    --warning-foreground: 0 0% 100%;
+
+    --scrollbar-thumb: 240 6% 80%;
+    --scrollbar-thumb-hover: 240 5% 66%;
+
+    --chart-1: 247 75% 52%;
+    --chart-2: 190 85% 38%;
+    --chart-3: 158 60% 34%;
+    --chart-4: 38 92% 40%;
+    --chart-5: 330 75% 46%;
+
+    --speaker-you: 247 70% 50%;
+    --speaker-others: 192 85% 34%;
+    --speaker-1: 155 70% 32%;
+    --speaker-2: 32 90% 36%;
+    --speaker-3: 330 70% 44%;
+    --speaker-4: 212 80% 42%;
+    --speaker-5: 275 60% 46%;
+    --speaker-6: 16 80% 42%;
   }
 }
 
@@ -166,18 +232,18 @@
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: #d1d5db;
+    background: hsl(var(--scrollbar-thumb));
     border-radius: 3px;
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: #9ca3af;
+    background: hsl(var(--scrollbar-thumb-hover));
   }
 
   /* Firefox scrollbar */
   .custom-scrollbar {
     scrollbar-width: thin;
-    scrollbar-color: #d1d5db transparent;
+    scrollbar-color: hsl(var(--scrollbar-thumb)) transparent;
   }
 
   /* BlockNote Editor - Override fixed dimensions for responsive layout */
