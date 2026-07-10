@@ -21,10 +21,12 @@ import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 
+const WAVEFORM_BAR_COUNT = 7;
+
 export default function Home() {
   // Local page state (not moved to contexts)
   const [isRecording, setIsRecordingState] = useState(false);
-  const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
+  const [barHeights, setBarHeights] = useState<string[]>(() => Array(WAVEFORM_BAR_COUNT).fill('4px'));
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
 
   // Use contexts for state management
@@ -167,13 +169,9 @@ export default function Home() {
   useEffect(() => {
     if (recordingState.isRecording) {
       const interval = setInterval(() => {
-        setBarHeights(prev => {
-          const newHeights = [...prev];
-          newHeights[0] = Math.random() * 20 + 10 + 'px';
-          newHeights[1] = Math.random() * 20 + 10 + 'px';
-          newHeights[2] = Math.random() * 20 + 10 + 'px';
-          return newHeights;
-        });
+        setBarHeights(
+          Array.from({ length: WAVEFORM_BAR_COUNT }, () => Math.random() * 20 + 10 + 'px')
+        );
       }, 300);
 
       return () => clearInterval(interval);
@@ -188,7 +186,7 @@ export default function Home() {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: 'easeOut' }}
-      className="flex flex-col h-[calc(100vh-var(--titlebar-height))] bg-gray-50"
+      className="flex flex-col h-[calc(100vh-var(--titlebar-height))] bg-background"
     >
       {/* All Modals supported*/}
       <SettingsModals
@@ -224,7 +222,7 @@ export default function Home() {
                 }`}
               >
                 <div className="w-full px-4 md:px-0 md:w-2/3 max-w-[750px] flex justify-center">
-                  <div className="bg-white rounded-full shadow-lg flex items-center">
+                  <div className="flex items-center">
                     <RecordingControls
                       isRecording={recordingState.isRecording}
                       onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
