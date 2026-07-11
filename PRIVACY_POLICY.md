@@ -1,8 +1,8 @@
-# Meetily Privacy Policy
+# Murmur Privacy Policy
 
 ## Our Privacy-First Commitment
 
-Meetily is built on the principle that your meeting data should remain private and under your control. This fork collects **no telemetry and no usage analytics whatsoever**, and does not phone home for any reason.
+Murmur is built on the principle that your meeting data should remain private and under your control. This fork collects **no telemetry and no usage analytics whatsoever**, and does not phone home for any reason.
 
 ## Data Processing Philosophy
 
@@ -26,11 +26,11 @@ This build contains **no analytics or telemetry code at all**. There is:
 - ❌ No automatic update checks or version pings to any server
 - ❌ No "opt-in" analytics toggle — there is simply nothing to opt into
 
-The only network connections Meetily makes are ones **you** initiate, listed below.
+The only network connections Murmur makes are ones **you** initiate, listed below.
 
 ## Network Connections (all user-initiated)
 
-Meetily connects to the network only for these purposes, and only when you ask it to:
+Murmur connects to the network only for these purposes, and only when you ask it to:
 
 ### Model downloads (one-time, to run locally)
 - **Speech-to-text models** (Whisper, Parakeet) and **speaker-diarization models** are downloaded from their public model hosts the first time you use them, then run entirely offline.
@@ -54,7 +54,7 @@ If you only ever use local providers, no meeting content ever leaves your comput
 ## Contact
 
 For privacy-related questions or concerns:
-- **GitHub Issues**: [Create an issue](https://github.com/RenzoBeux/meetily/issues)
+- **GitHub Issues**: [Create an issue](https://github.com/RenzoBeux/murmur/issues)
 
 ## Open Source Commitment
 

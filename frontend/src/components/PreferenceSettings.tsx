@@ -152,7 +152,7 @@ export function PreferenceSettings() {
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-lg font-semibold text-foreground mb-2">Appearance</h3>
-            <p className="text-sm text-muted-foreground">Choose how Meetily looks, or follow your system setting</p>
+            <p className="text-sm text-muted-foreground">Choose how Murmur looks, or follow your system setting</p>
           </div>
           <AppearanceSelector />
         </div>
@@ -173,7 +173,7 @@ export function PreferenceSettings() {
       <div className="bg-card rounded-lg border border-border p-6">
         <h3 className="text-lg font-semibold text-foreground mb-4">Data Storage Locations</h3>
         <p className="text-sm text-muted-foreground mb-6">
-          View and access where Meetily stores your data
+          View and access where Murmur stores your data
         </p>
 
         <div className="space-y-4">

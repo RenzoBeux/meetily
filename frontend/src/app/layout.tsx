@@ -250,11 +250,20 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased`}>
+        {/* One-time carry-over of the theme preference from the pre-rename
+            storage key; must run before next-themes' own inline script reads
+            murmur-theme. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "try{if(!localStorage.getItem('murmur-theme')&&localStorage.getItem('meetily-theme')){localStorage.setItem('murmur-theme',localStorage.getItem('meetily-theme'))}}catch(e){}",
+          }}
+        />
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"
           enableSystem
-          storageKey="meetily-theme"
+          storageKey="murmur-theme"
           disableTransitionOnChange
         >
         <ThemeSync />

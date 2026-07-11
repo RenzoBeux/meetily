@@ -1,4 +1,4 @@
-# Contributing to Meetily
+# Contributing to Murmur
 
 Thanks for your interest in contributing! This repository is a personal fork of [Zackriya-Solutions/meeting-minutes](https://github.com/Zackriya-Solutions/meeting-minutes) with a restructured, backend-free architecture — issues and pull requests are welcome.
 
@@ -13,7 +13,7 @@ Thanks for your interest in contributing! This repository is a personal fork of 
 
 1. Fork the repository and clone your fork:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/meetily.git
+   git clone https://github.com/YOUR_USERNAME/murmur.git
    ```
 2. Create a branch:
    ```bash

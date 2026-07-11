@@ -273,7 +273,7 @@ async fn run_rediarization<R: Runtime>(
 
             let wav_bytes = prepare_masked_wav(&audio_path, &mic_ranges).await?;
             let wav_path =
-                std::env::temp_dir().join(format!("meetily-diar-{}.wav", uuid::Uuid::new_v4()));
+                std::env::temp_dir().join(format!("murmur-diar-{}.wav", uuid::Uuid::new_v4()));
             tokio::fs::write(&wav_path, &wav_bytes)
                 .await
                 .map_err(|e| anyhow!("Failed to write temp WAV: {e}"))?;
@@ -312,7 +312,7 @@ async fn run_rediarization<R: Runtime>(
             // on-device) only ever sees "them" audio.
             let wav_bytes = prepare_masked_wav(&audio_path, &mic_ranges).await?;
 
-            let object_key = format!("meetily/{}-{}.wav", meeting_id, uuid::Uuid::new_v4());
+            let object_key = format!("murmur/{}-{}.wav", meeting_id, uuid::Uuid::new_v4());
             let client = PyannoteClient::new(api_key)?;
             let progress_app = app.clone();
             let progress_meeting_id = meeting_id.to_string();

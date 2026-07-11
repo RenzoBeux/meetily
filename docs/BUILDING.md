@@ -1,6 +1,6 @@
-# Building Meetily from Source
+# Building Murmur from Source
 
-Meetily is a single Tauri app — everything is built from the `frontend/` directory. The build automatically detects your GPU and enables the right acceleration backend.
+Murmur is a single Tauri app — everything is built from the `frontend/` directory. The build automatically detects your GPU and enables the right acceleration backend.
 
 ## Prerequisites (all platforms)
 
@@ -167,7 +167,7 @@ pnpm tauri:build
 ### Output
 
 ```
-frontend/src-tauri/target/release/bundle/appimage/Meetily_<version>_amd64.AppImage
+frontend/src-tauri/target/release/bundle/appimage/Murmur_<version>_amd64.AppImage
 ```
 
 ---

@@ -78,7 +78,7 @@
 
 @layer base {
   /*
-   * Meetily brand tokens. Dark is the default theme: :root carries the dark
+   * Murmur brand tokens. Dark is the default theme: :root carries the dark
    * values so the first CSS paint is dark even before next-themes stamps a
    * class on <html>. `.dark` duplicates :root; `.light` overrides.
    */

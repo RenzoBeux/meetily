@@ -1,4 +1,4 @@
-# Meetily Windows dev-environment bootstrap.
+# Murmur Windows dev-environment bootstrap.
 # Idempotent: safe to re-run. Skips anything that's already in place.
 #
 # Usage (from frontend/ folder):

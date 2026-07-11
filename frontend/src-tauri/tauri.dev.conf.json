@@ -1,5 +1,5 @@
 {
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-    "productName": "meetily-dev",
-    "identifier": "com.meetily.ai.dev"
+    "productName": "Murmur-dev",
+    "identifier": "com.murmur.app.dev"
 }

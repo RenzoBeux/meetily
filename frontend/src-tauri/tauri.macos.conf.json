@@ -3,7 +3,7 @@
     "app": {
         "windows": [
             {
-                "title": "Meetily",
+                "title": "Murmur",
                 "width": 1100,
                 "height": 700,
                 "minWidth": 480,

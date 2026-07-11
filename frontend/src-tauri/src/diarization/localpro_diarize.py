@@ -14,7 +14,7 @@
 # torch-backend = "auto"
 # ///
 
-# Meetily "Local Pro" diarization sidecar.
+# Murmur "Local Pro" diarization sidecar.
 #
 # Runs the pyannote community-1 pipeline fully locally and prints the speaker
 # segments as JSON on stdout (last line). All human-readable progress goes to

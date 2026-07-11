@@ -2,7 +2,7 @@
 """
 Meeting Transcript Database Injector
 
-Injects CSV-based transcript data into the Meetily SQLite database,
+Injects CSV-based transcript data into the Murmur SQLite database,
 creating meeting entries identical to those from normal recordings.
 
 Usage:
@@ -27,21 +27,26 @@ from pathlib import Path
 
 
 def get_default_db_path() -> Path:
-    """Get the default database path based on the platform."""
+    """Get the default database path based on the platform.
+
+    The app stores its database under the bundle-identifier data dir
+    (com.murmur.app); installs from before the Meetily -> Murmur rename
+    used com.meetily.ai, so fall back to that when the new path is absent.
+    """
     system = platform.system()
 
     if system == "Darwin":  # macOS
-        base_path = Path.home() / "Library" / "Application Support" / "Meetily"
+        base_path = Path.home() / "Library" / "Application Support"
     elif system == "Windows":
         appdata = os.environ.get("APPDATA", "")
-        if appdata:
-            base_path = Path(appdata) / "Meetily"
-        else:
-            base_path = Path.home() / "AppData" / "Roaming" / "Meetily"
+        base_path = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
     else:  # Linux and others
-        base_path = Path.home() / ".config" / "Meetily"
+        xdg = os.environ.get("XDG_DATA_HOME", "")
+        base_path = Path(xdg) if xdg else Path.home() / ".local" / "share"
 
-    return base_path / "meeting_minutes.sqlite"
+    current = base_path / "com.murmur.app" / "meeting_minutes.sqlite"
+    legacy = base_path / "com.meetily.ai" / "meeting_minutes.sqlite"
+    return current if current.exists() or not legacy.exists() else legacy
 
 
 def estimate_duration(text: str) -> float:
@@ -227,7 +232,7 @@ def verify_injection(db_path: str, meeting_id: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Inject CSV transcript data into Meetily database",
+        description="Inject CSV transcript data into Murmur database",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 CSV Format (minimal - just 'text' column required):
@@ -281,7 +286,7 @@ Example usage:
 
     if not db_path.exists():
         print(f"Error: Database not found at {db_path}", file=sys.stderr)
-        print("Make sure Meetily has been run at least once to create the database.", file=sys.stderr)
+        print("Make sure Murmur has been run at least once to create the database.", file=sys.stderr)
         sys.exit(1)
 
     # Resolve CSV path
@@ -344,7 +349,7 @@ Example usage:
     except Exception as e:
         print(f"Warning: Verification failed: {e}", file=sys.stderr)
 
-    print("\nThe meeting should now appear in the Meetily sidebar.")
+    print("\nThe meeting should now appear in the Murmur sidebar.")
 
 
 if __name__ == "__main__":

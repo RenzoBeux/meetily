@@ -9,13 +9,13 @@ interface WordmarkProps {
   className?: string
 }
 
-/** Logomark + "Meetily" lockup for the sidebar header and other chrome. */
+/** Logomark + "Murmur" lockup for the sidebar header and other chrome. */
 export function Wordmark({ markSize = 24, className }: WordmarkProps) {
   return (
     <span className={cn('inline-flex items-center gap-2', className)}>
       <Logomark size={markSize} />
       <span className="text-[17px] font-semibold tracking-tight text-foreground">
-        Meetily
+        Murmur
       </span>
     </span>
   )

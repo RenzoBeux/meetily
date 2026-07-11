@@ -46,7 +46,7 @@ export function Titlebar() {
       >
         <Logomark size={16} className="pointer-events-none" />
         <span className="text-caption font-medium text-muted-foreground pointer-events-none">
-          Meetily
+          Murmur
         </span>
       </div>
       {platform !== 'macos' && <WindowControls />}

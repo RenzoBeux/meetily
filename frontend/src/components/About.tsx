@@ -1,20 +1,23 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
+import { Github } from 'lucide-react';
 import { Logomark } from './brand/Logomark';
 
+const REPO_URL = 'https://github.com/RenzoBeux/murmur';
+const UPSTREAM_URL = 'https://github.com/Zackriya-Solutions/meeting-minutes';
 
 export function About() {
-    const [currentVersion, setCurrentVersion] = useState<string>('0.3.0');
+    const [currentVersion, setCurrentVersion] = useState<string>('');
 
     useEffect(() => {
         // Get current version on mount
         getVersion().then(setCurrentVersion).catch(console.error);
     }, []);
 
-    const handleContactClick = async () => {
+    const openExternal = async (url: string) => {
         try {
-            await invoke('open_external_url', { url: 'https://meetily.zackriya.com/#about' });
+            await invoke('open_external_url', { url });
         } catch (error) {
             console.error('Failed to open link:', error);
         }
@@ -27,7 +30,9 @@ export function About() {
                 <div className="mb-3 flex justify-center">
                     <Logomark size={64} />
                 </div>
-                <span className="text-sm text-muted-foreground font-mono"> v{currentVersion}</span>
+                <h1 className="text-xl font-semibold tracking-tight text-foreground">
+                    Murmur{currentVersion && <span className="ml-2 text-sm font-normal text-muted-foreground font-mono">v{currentVersion}</span>}
+                </h1>
                 <p className="text-medium text-muted-foreground mt-1">
                     Real-time notes and summaries that never leave your machine.
                 </p>
@@ -35,7 +40,7 @@ export function About() {
 
             {/* Features Grid - Compact */}
             <div className="space-y-3">
-                <h2 className="text-base font-semibold text-foreground">What makes Meetily different</h2>
+                <h2 className="text-base font-semibold text-foreground">What makes Murmur different</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <div className="bg-card border border-border rounded-lg p-3 hover:bg-accent/50 transition-colors">
                         <h3 className="font-bold text-sm text-foreground mb-1">Privacy-first</h3>
@@ -56,31 +61,34 @@ export function About() {
                 </div>
             </div>
 
-            {/* Coming Soon - Compact */}
-            <div className="bg-brand/10 rounded-lg p-3">
-                <p className="text-s text-brand">
-                    <span className="font-bold">Coming soon:</span> A library of on-device AI agents — automating follow-ups, action tracking, and more.
-                </p>
-            </div>
-
             {/* CTA Section - Compact */}
             <div className="text-center space-y-2">
-                <h3 className="text-medium font-semibold text-foreground">Ready to push your business further?</h3>
                 <p className="text-s text-muted-foreground">
-                    If you're planning to build privacy-first custom AI agents or a fully tailored product for your <span className="font-bold">business</span>, we can help you build it.
+                    Murmur is free and open source. Found a bug or have an idea?
                 </p>
                 <button
-                    onClick={handleContactClick}
-                    className="inline-flex items-center px-4 py-2 bg-primary hover:bg-brand-hover text-primary-foreground text-sm font-medium rounded-md transition-colors duration-200"
+                    onClick={() => openExternal(REPO_URL)}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-brand-hover text-primary-foreground text-sm font-medium rounded-md transition-colors duration-200"
                 >
-                    Chat with the Zackriya team
+                    <Github className="w-4 h-4" />
+                    View on GitHub
                 </button>
             </div>
 
             {/* Footer - Compact */}
-            <div className="pt-2 border-t border-border text-center">
+            <div className="pt-2 border-t border-border text-center space-y-1">
                 <p className="text-xs text-muted-foreground/70">
-                    Built by Zackriya Solutions
+                    Built by Renzo Beux
+                </p>
+                <p className="text-xs text-muted-foreground/70">
+                    Forked from{' '}
+                    <button
+                        onClick={() => openExternal(UPSTREAM_URL)}
+                        className="underline hover:text-muted-foreground"
+                    >
+                        Meetily
+                    </button>{' '}
+                    by Zackriya Solutions — thanks for open-sourcing it.
                 </p>
             </div>
         </div>

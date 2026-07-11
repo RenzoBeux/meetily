@@ -1,6 +1,6 @@
-# Meetily — Frontend (Tauri App)
+# Murmur — Frontend (Tauri App)
 
-The Meetily desktop application: a Next.js + Tailwind UI wrapped in Tauri 2.x, with a Rust core that handles audio capture and mixing, local Whisper/Parakeet transcription, speaker diarization, SQLite persistence, and LLM summarization.
+The Murmur desktop application: a Next.js + Tailwind UI wrapped in Tauri 2.x, with a Rust core that handles audio capture and mixing, local Whisper/Parakeet transcription, speaker diarization, SQLite persistence, and LLM summarization.
 
 This is the whole application — there is no separate server to run. See the [root README](../README.md) for an overview and the [Building guide](../docs/BUILDING.md) for prerequisites and GPU setup.
 

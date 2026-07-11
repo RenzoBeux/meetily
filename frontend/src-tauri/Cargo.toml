@@ -1,10 +1,10 @@
 [package]
-name = "meetily"
+name = "murmur"
 version = "0.6.0"
-description = "A Tauri App for meeting minutes"
-authors = ["Sujith S"]
+description = "Privacy-first AI meeting assistant that runs entirely on your machine"
+authors = ["Renzo Beux", "Zackriya Solutions"]
 license = "MIT"
-repository = "https://github.com/Zackriya-Solutions/meeting-minutes"
+repository = "https://github.com/RenzoBeux/murmur"
 edition = "2021"
 rust-version = "1.77"
 

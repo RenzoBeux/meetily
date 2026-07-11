@@ -16,14 +16,14 @@ const Logo = React.forwardRef<HTMLButtonElement, LogoProps>(({ isCollapsed }, re
         <button
           ref={ref}
           className="flex items-center justify-start mb-2 cursor-pointer bg-transparent border-none p-0 hover:opacity-80 transition-opacity"
-          aria-label="About Meetily"
+          aria-label="About Murmur"
         >
           {isCollapsed ? <Logomark size={32} /> : <Wordmark markSize={28} />}
         </button>
       </DialogTrigger>
       <DialogContent>
         <VisuallyHidden>
-          <DialogTitle>About Meetily</DialogTitle>
+          <DialogTitle>About Murmur</DialogTitle>
         </VisuallyHidden>
         <About />
       </DialogContent>

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Meetily** is a privacy-first AI meeting assistant that captures, transcribes, and summarizes meetings entirely on local infrastructure. It is a single Tauri desktop application — everything (audio capture, transcription, storage, summarization, chat) runs in-process:
+**Murmur** is a privacy-first AI meeting assistant that captures, transcribes, and summarizes meetings entirely on local infrastructure. It is a single Tauri desktop application — everything (audio capture, transcription, storage, summarization, chat) runs in-process:
 
 - **Desktop App**: Tauri 2.x (Rust + Next.js 14 + React 18 + TypeScript)
 - **Audio Processing**: Rust (cpal, WASAPI/ScreenCaptureKit, professional audio mixing)
@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Speaker Diarization**: Rust-native (sherpa-onnx), `src-tauri/src/diarization/`
 - **Persistence**: Local SQLite via sqlx (`src-tauri/src/database/`, migrations in `src-tauri/migrations/`)
 - **LLM Integration**: Ollama, LM Studio, Claude, OpenAI, Groq, OpenRouter, custom OpenAI-compatible, plus a bundled llama.cpp sidecar (`llama-helper/`, root workspace member)
-- **MCP Server** (built-in): `meetily --mcp` runs a read-only stdio MCP server against the app's SQLite DB (`src-tauri/src/mcp/`). No GUI, no single-instance guard; DB path override via `--db <path>` or `MEETILY_DB_PATH`. Tools: `list_meetings`, `get_transcript`, `get_summary`, `get_meeting`, `search_transcripts`.
+- **MCP Server** (built-in): `murmur --mcp` runs a read-only stdio MCP server against the app's SQLite DB (`src-tauri/src/mcp/`). No GUI, no single-instance guard; DB path override via `--db <path>` or `MURMUR_DB_PATH`. Tools: `list_meetings`, `get_transcript`, `get_summary`, `get_meeting`, `search_transcripts`.
 
 > **History note**: the repo once contained a Python FastAPI backend (port 5167), an external whisper-server (port 8178), and later a `backend/mcp_server/` Python MCP server. All were removed — every feature they provided lives in the Rust side now (the MCP server is built into the app binary). If you find references to them in docs or comments, they are stale.
 
@@ -170,8 +170,8 @@ await listen<TranscriptUpdate>('transcript-update', (event) => {
 
 **Model Storage Locations**:
 - **Development**: `frontend/models/`
-- **Production (macOS)**: `~/Library/Application Support/Meetily/models/`
-- **Production (Windows)**: `%APPDATA%\Meetily\models\`
+- **Production (macOS)**: `~/Library/Application Support/Murmur/models/`
+- **Production (Windows)**: `%APPDATA%\Murmur\models\`
 
 **Model Loading** (frontend/src-tauri/src/whisper_engine/whisper_engine.rs):
 ```rust

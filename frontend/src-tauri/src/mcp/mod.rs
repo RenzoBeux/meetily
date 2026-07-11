@@ -1,8 +1,8 @@
-// Built-in MCP server (`meetily --mcp`): read-only Model Context Protocol
+// Built-in MCP server (`murmur --mcp`): read-only Model Context Protocol
 // access to the app's SQLite database over stdio, replacing the old
 // `backend/mcp_server/` Python implementation.
 //
-// MCP clients (Claude Desktop / Claude Code / Cursor / …) spawn the Meetily
+// MCP clients (Claude Desktop / Claude Code / Cursor / …) spawn the Murmur
 // executable with the `--mcp` flag; it speaks newline-delimited JSON-RPC 2.0
 // on stdin/stdout (the MCP stdio transport) and exits when stdin closes. The
 // GUI does not need to be running — and when it is, the read-only WAL reader
@@ -24,11 +24,16 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 
-/// Resolve the Meetily database path the same way the Tauri app does
+/// Resolve the Murmur database path the same way the Tauri app does
 /// (`app_data_dir` = platform data dir + bundle identifier), without booting
-/// Tauri. Overridable via `MEETILY_DB_PATH` or `--db <path>`.
+/// Tauri. Overridable via `MURMUR_DB_PATH` (or the legacy `MEETILY_DB_PATH`)
+/// or `--db <path>`.
 pub fn default_db_path() -> Result<PathBuf> {
-    const IDENTIFIER: &str = "com.meetily.ai";
+    const IDENTIFIER: &str = "com.murmur.app";
+    // Pre-rename installs kept their data under the old Meetily identifier;
+    // the GUI migrates that directory on first launch, but `murmur --mcp` can
+    // run before the GUI ever starts, so fall back to the legacy location.
+    const LEGACY_IDENTIFIER: &str = "com.meetily.ai";
 
     let base = if cfg!(target_os = "windows") {
         PathBuf::from(std::env::var("APPDATA").map_err(|_| anyhow!("APPDATA is not set"))?)
@@ -45,14 +50,21 @@ pub fn default_db_path() -> Result<PathBuf> {
         }
     };
 
-    Ok(base.join(IDENTIFIER).join("meeting_minutes.sqlite"))
+    let current = base.join(IDENTIFIER).join("meeting_minutes.sqlite");
+    if !current.exists() {
+        let legacy = base.join(LEGACY_IDENTIFIER).join("meeting_minutes.sqlite");
+        if legacy.exists() {
+            return Ok(legacy);
+        }
+    }
+    Ok(current)
 }
 
 fn tool_definitions() -> Value {
     json!([
         {
             "name": "list_meetings",
-            "description": "List Meetily meetings, most recent first. Returns meeting_id values usable with the other tools, plus whether a summary exists.",
+            "description": "List Murmur meetings, most recent first. Returns meeting_id values usable with the other tools, plus whether a summary exists.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -62,7 +74,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "get_transcript",
-            "description": "Get the full transcript of a Meetily meeting, with speaker tags and timestamps when available.",
+            "description": "Get the full transcript of a Murmur meeting, with speaker tags and timestamps when available.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -73,7 +85,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "get_summary",
-            "description": "Get the AI-generated summary of a Meetily meeting as markdown, or a status note if no summary exists.",
+            "description": "Get the AI-generated summary of a Murmur meeting as markdown, or a status note if no summary exists.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -142,7 +154,7 @@ fn handle_initialize(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": {} },
         "serverInfo": {
-            "name": "meetily",
+            "name": "murmur",
             "version": env!("CARGO_PKG_VERSION"),
         }
     })
@@ -157,7 +169,7 @@ fn text_tool_result(text: String, is_error: bool) -> Value {
 
 /// Run the stdio MCP server until stdin closes.
 pub async fn run_stdio(db_path: PathBuf) -> Result<()> {
-    log::info!("Meetily MCP server starting (db: {})", db_path.display());
+    log::info!("Murmur MCP server starting (db: {})", db_path.display());
     let pool = tools::open_readonly_pool(&db_path).await?;
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
@@ -226,7 +238,7 @@ mod tests {
     fn initialize_echoes_client_protocol_version() {
         let result = handle_initialize(&json!({"protocolVersion": "2024-11-05"}));
         assert_eq!(result["protocolVersion"], "2024-11-05");
-        assert_eq!(result["serverInfo"]["name"], "meetily");
+        assert_eq!(result["serverInfo"]["name"], "murmur");
         assert!(result["capabilities"]["tools"].is_object());
     }
 

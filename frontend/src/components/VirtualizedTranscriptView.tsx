@@ -473,7 +473,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                             <div className="flex justify-center mb-4">
                                 <Logomark size={48} />
                             </div>
-                            <p className="text-lg font-semibold text-foreground">Welcome to Meetily</p>
+                            <p className="text-lg font-semibold text-foreground">Welcome to Murmur</p>
                             <p className="text-xs mt-1">Start recording to see live transcription</p>
                         </>
                     )}

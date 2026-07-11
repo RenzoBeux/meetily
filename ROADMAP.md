@@ -11,8 +11,8 @@ Ideas validated in discussion but deferred until there is time to test them prop
 For online meetings, the meeting platform already knows who is speaking — acoustic diarization re-derives information the UI is displaying. Meet and Teams (web) render live **captions that carry the speaker's display name**. A small companion browser extension can read them:
 
 1. Content-script adapters (one for Meet's caption DOM, one for Teams web's) emit `(timestamp, speaker_name, caption_text)` events plus the participant list.
-2. The extension streams events to the Meetily desktop app over a **localhost WebSocket** (Tauri hosts the server). Everything stays on-device — no change to the privacy story.
-3. Meetily keeps its own Whisper transcription for quality and uses the caption events as a **speaker timeline**: align caption timestamps against transcript segments and replace `speaker_1`/`Others` with real names.
+2. The extension streams events to the Murmur desktop app over a **localhost WebSocket** (Tauri hosts the server). Everything stays on-device — no change to the privacy story.
+3. Murmur keeps its own Whisper transcription for quality and uses the caption events as a **speaker timeline**: align caption timestamps against transcript segments and replace `speaker_1`/`Others` with real names.
 4. The participant list auto-fills the meeting's attendees roster (which already feeds summary/chat prompts and the diarization speaker-count prefill).
 5. Acoustic diarization remains the fallback for in-person meetings and non-browser apps. Metadata-based attribution is *right or absent* — it never invents a "Speaker 3".
 

@@ -8,13 +8,13 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 use std::path::Path;
 
-/// Open the Meetily database strictly read-only — this server can never
+/// Open the Murmur database strictly read-only — this server can never
 /// modify meeting data, and it coexists with a running app (WAL readers).
 pub async fn open_readonly_pool(db_path: &Path) -> Result<SqlitePool> {
     if !db_path.exists() {
         return Err(anyhow!(
-            "Meetily database not found at '{}'. Launch the Meetily app once to create it, \
-             or pass --db <path> / set MEETILY_DB_PATH.",
+            "Murmur database not found at '{}'. Launch the Murmur app once to create it, \
+             or pass --db <path> / set MURMUR_DB_PATH.",
             db_path.display()
         ));
     }
@@ -191,7 +191,7 @@ pub async fn list_meetings(pool: &SqlitePool, limit: i64) -> Result<String> {
     .await?;
 
     if rows.is_empty() {
-        return Ok("No meetings found in the Meetily database yet.".to_string());
+        return Ok("No meetings found in the Murmur database yet.".to_string());
     }
     let mut lines = vec![format!("Found {} meeting(s):", rows.len()), String::new()];
     for row in &rows {

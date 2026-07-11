@@ -1,6 +1,6 @@
 # GPU Acceleration Guide
 
-Meetily accelerates transcription (whisper.cpp via `whisper-rs`) and local summarization (llama.cpp sidecar) on the GPU. Expect roughly 5–10x faster transcription than CPU.
+Murmur accelerates transcription (whisper.cpp via `whisper-rs`) and local summarization (llama.cpp sidecar) on the GPU. Expect roughly 5–10x faster transcription than CPU.
 
 ## Supported Backends
 

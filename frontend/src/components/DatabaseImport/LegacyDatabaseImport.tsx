@@ -119,7 +119,7 @@ export function LegacyDatabaseImport({ isOpen, onComplete }: LegacyDatabaseImpor
     <Dialog open={isOpen} onOpenChange={() => {}}>
       <DialogContent className="sm:max-w-[600px]" onPointerDownOutside={(e) => e.preventDefault()}>
         <DialogHeader>
-          <DialogTitle className="text-2xl">Welcome to Meetily!</DialogTitle>
+          <DialogTitle className="text-2xl">Welcome to Murmur!</DialogTitle>
           <DialogDescription className="text-base pt-2">
             Do you have data from a previous Meetily installation?
           </DialogDescription>

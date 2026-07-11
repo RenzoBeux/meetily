@@ -8,7 +8,7 @@ interface LogomarkProps {
 }
 
 /**
- * The Meetily logomark: a charcoal tile with four violet waveform bars.
+ * The Murmur logomark: a charcoal tile with four violet waveform bars.
  * Inline SVG so it stays crisp at any size and needs no asset loading.
  * Same art as src-tauri/app-icon.svg (the app-icon source of truth).
  */

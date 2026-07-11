@@ -43,6 +43,7 @@ pub mod database;
 pub mod diarization;
 pub mod export;
 pub mod mcp;
+pub mod migration;
 pub mod notifications;
 pub mod ollama;
 pub mod onboarding;
@@ -419,6 +420,10 @@ pub fn run() {
         .manage(audio::init_system_audio_state())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
+            // Move legacy Meetily data dirs into place before the database,
+            // model engines, or notification manager read from them.
+            migration::migrate_legacy_brand_dirs(&_app.handle());
+
             log::info!("Application setup complete");
 
             // Initialize system tray
