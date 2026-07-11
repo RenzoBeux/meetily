@@ -76,8 +76,14 @@ impl IncrementalAudioSaver {
 
         // Save checkpoint when buffer reaches threshold (30 seconds)
         if total_samples >= self.checkpoint_interval_samples {
-            self.save_checkpoint()?;
+            // Clear the buffer regardless of whether the encode succeeded. A
+            // recoverable failure (disk full, ffmpeg non-zero exit) must NOT leave the
+            // buffer full: otherwise every subsequent ~600ms chunk re-encodes an
+            // ever-growing buffer (~1.4 GB/hour) until OOM and total loss. Dropping one
+            // 30s window is the lesser evil; the error still propagates to the caller.
+            let result = self.save_checkpoint();
             self.checkpoint_buffer.clear();
+            result?;
         }
 
         Ok(())
@@ -289,8 +295,19 @@ pub async fn recover_audio_from_checkpoints(
         });
     }
 
-    // Sort by filename (audio_chunk_000.mp4, audio_chunk_001.mp4, etc.)
-    checkpoint_files.sort_by_key(|entry| entry.path());
+    // Sort numerically by the chunk index parsed from the filename
+    // (audio_chunk_<n>.mp4). A lexicographic sort misorders once the index grows
+    // past the {:03} zero-pad width (e.g. "audio_chunk_1000" < "audio_chunk_999"
+    // as strings), corrupting reassembly for recordings longer than ~8.3h.
+    checkpoint_files.sort_by_key(|entry| {
+        entry
+            .path()
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.rsplit('_').next())
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0)
+    });
 
     let chunk_count = checkpoint_files.len() as u32;
     let estimated_duration = (chunk_count as f64) * 30.0; // 30 seconds per chunk

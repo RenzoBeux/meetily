@@ -171,6 +171,9 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         audio_start_time: (t as any).audio_start_time,
         audio_end_time: (t as any).audio_end_time,
         duration: (t as any).duration,
+        // Preserve speaker attribution ("mic"/"system"/diarized) through recovery;
+        // it is stored in IndexedDB but was previously dropped by this mapping.
+        speaker: (t as any).speaker,
       }));
 
       // 6. Save to backend database using existing save utilities

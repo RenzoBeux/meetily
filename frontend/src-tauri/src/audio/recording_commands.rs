@@ -65,6 +65,43 @@ pub struct TranscriptionStatus {
 // RECORDING COMMANDS
 // ============================================================================
 
+/// Minimum free disk space (bytes) required to start a recording. Below this we
+/// refuse to start rather than record into a volume that fills mid-meeting and
+/// silently truncates the audio/transcript.
+const MIN_FREE_DISK_BYTES: u64 = 500 * 1024 * 1024; // 500 MB
+
+/// Abort start if the volume holding the app data dir is critically low on space.
+/// Best-effort: if we cannot resolve the path or the disk, we ALLOW the recording
+/// (never block the user on our own uncertainty). Matches the disk whose mount
+/// point is the longest prefix of the target path.
+fn check_free_disk_space<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let target = match app.path().app_data_dir() {
+        Ok(p) => p,
+        Err(_) => return Ok(()),
+    };
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let mut best: Option<(usize, u64)> = None; // (mount_point_len, available_bytes)
+    for disk in &disks {
+        let mount = disk.mount_point();
+        if target.starts_with(mount) {
+            let len = mount.as_os_str().len();
+            if best.map_or(true, |(blen, _)| len > blen) {
+                best = Some((len, disk.available_space()));
+            }
+        }
+    }
+    if let Some((_, available)) = best {
+        if available < MIN_FREE_DISK_BYTES {
+            return Err(format!(
+                "Not enough free disk space to start recording: {} MB available, at least {} MB required. Free up space and try again.",
+                available / (1024 * 1024),
+                MIN_FREE_DISK_BYTES / (1024 * 1024)
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Start recording with default devices
 pub async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     start_recording_with_meeting_name(app, None).await
@@ -86,6 +123,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     if current_recording_state {
         return Err("Recording already in progress".to_string());
     }
+
+    // Refuse to start on a critically-full disk (prevents mid-meeting truncation).
+    check_free_disk_space(&app)?;
 
     // Validate that transcription models are available before starting recording
     info!("🔍 Validating transcription model availability before starting recording...");
@@ -331,6 +371,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         return Err("Recording already in progress".to_string());
     }
 
+    // Refuse to start on a critically-full disk (prevents mid-meeting truncation).
+    check_free_disk_space(&app)?;
+
     // Validate that transcription models are available before starting recording
     info!("🔍 Validating transcription model availability before starting recording...");
     if let Err(validation_error) = transcription::validate_transcription_model_ready(&app).await {
@@ -475,6 +518,79 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     Ok(())
 }
 
+/// Convert the recording saver's transcript segments into the repository's
+/// `TranscriptSegment` shape used by `save_transcript` (the same type the frontend
+/// save path deserializes into). The saver type carries a `display_time` label and
+/// f64 timings; the repo type wants a `timestamp` string and Option-wrapped timings.
+fn recording_segments_to_api(
+    segments: &[super::recording_saver::TranscriptSegment],
+) -> Vec<crate::api::TranscriptSegment> {
+    segments
+        .iter()
+        .map(|s| crate::api::TranscriptSegment {
+            id: s.id.clone(),
+            text: s.text.clone(),
+            timestamp: s.display_time.clone(),
+            audio_start_time: Some(s.audio_start_time),
+            audio_end_time: Some(s.audio_end_time),
+            duration: Some(s.duration),
+            speaker: if s.speaker.is_empty() {
+                None
+            } else {
+                Some(s.speaker.clone())
+            },
+        })
+        .collect()
+}
+
+/// Best-effort persist of the in-progress recording's transcript at app exit / tray quit.
+/// Does NOT wait for the transcription backlog to drain (that could take minutes) — it
+/// saves whatever segments the manager currently holds so a meeting is never lost to a
+/// quit. No-op when not recording. Call from an async context (e.g. RunEvent::Exit).
+pub async fn save_active_recording_on_exit<R: Runtime>(app: &AppHandle<R>) {
+    if !IS_RECORDING.load(Ordering::SeqCst) {
+        return;
+    }
+    info!("💾 App exiting while recording — persisting current transcript before quit");
+
+    // Snapshot from the global manager without removing it (sync methods only; the
+    // guard is dropped before any await, so no std mutex is held across .await).
+    let snapshot = {
+        let guard = RECORDING_MANAGER.lock().unwrap();
+        guard.as_ref().map(|m| {
+            (
+                m.get_transcript_segments(),
+                m.get_meeting_name(),
+                m.get_meeting_folder(),
+            )
+        })
+    };
+    let Some((segments, meeting_name, meeting_folder)) = snapshot else {
+        return;
+    };
+    if segments.is_empty() {
+        return;
+    }
+    let Some(state) = app.try_state::<crate::state::AppState>() else {
+        warn!("AppState unavailable at exit; cannot persist in-progress recording");
+        return;
+    };
+    let title = meeting_name.unwrap_or_else(|| "New Meeting".to_string());
+    let folder_path = meeting_folder.map(|p| p.to_string_lossy().to_string());
+    let api_segments = recording_segments_to_api(&segments);
+    match crate::database::repositories::transcript::TranscriptsRepository::save_transcript(
+        state.db_manager.pool(),
+        &title,
+        &api_segments,
+        folder_path,
+    )
+    .await
+    {
+        Ok(id) => info!("💾 Persisted in-progress meeting on exit: id={}", id),
+        Err(e) => error!("❌ Failed to persist meeting on exit: {}", e),
+    }
+}
+
 /// Stop recording with optimized graceful shutdown ensuring NO transcript chunks are lost
 pub async fn stop_recording<R: Runtime>(
     app: AppHandle<R>,
@@ -500,25 +616,34 @@ pub async fn stop_recording<R: Runtime>(
         }),
     );
 
-    // Step 1: Stop audio capture immediately (no more new chunks) with proper error handling
-    let manager_for_cleanup = {
+    // Step 1: Stop audio capture immediately (no more new chunks) with proper error handling.
+    // Take the manager only long enough to force-flush the pipeline, then RETURN it to the
+    // global so the transcript-update listener (which reaches the manager via the global)
+    // keeps appending late segments while the transcription backlog drains in Step 2. We
+    // take it back for good in Step 4 to save it — this way get_transcript_segments() there
+    // includes the drain-time tail, not just what existed when Stop was pressed.
+    let manager_for_flush = {
         let mut global_manager = RECORDING_MANAGER.lock().unwrap();
         global_manager.take()
     };
 
-    let stop_result = if let Some(mut manager) = manager_for_cleanup {
+    let stop_result = if let Some(mut manager) = manager_for_flush {
         // Use FORCE FLUSH to immediately process all accumulated audio - eliminates 30s delay!
         info!("🚀 Using FORCE FLUSH to eliminate pipeline accumulation delays");
         let result = manager.stop_streams_and_force_flush().await;
-        // Store manager back for later cleanup
-        let manager_for_cleanup = Some(manager);
-        (result, manager_for_cleanup)
+        match &result {
+            // On success, return the manager to the global for the duration of the drain.
+            Ok(_) => {
+                *RECORDING_MANAGER.lock().unwrap() = Some(manager);
+            }
+            // On failure we bail out below; drop the manager rather than orphan it.
+            Err(_) => {}
+        }
+        result
     } else {
         warn!("No recording manager found to stop");
-        (Ok(()), None)
+        Ok(())
     };
-
-    let (stop_result, manager_for_cleanup) = stop_result;
 
     match stop_result {
         Ok(_) => {
@@ -530,15 +655,9 @@ pub async fn stop_recording<R: Runtime>(
         }
     }
 
-    // Step 1.5: Clean up transcript listener to release microphone
-    // Unlisten transcript-update event to prevent lingering references
-    {
-        use tauri::Listener;
-        if let Some(listener_id) = TRANSCRIPT_LISTENER_ID.lock().unwrap().take() {
-            app.unlisten(listener_id);
-            info!("✅ Transcript-update listener removed");
-        }
-    }
+    // NOTE: the transcript-update listener is deliberately kept ALIVE here (it used to be
+    // removed at this point). It is unlistened after the Step 2 drain so late segments
+    // transcribed during the backlog drain still reach the manager and transcripts.json.
 
     // Step 2: Signal transcription workers to finish processing ALL queued chunks
     let _ = app.emit(
@@ -604,6 +723,17 @@ pub async fn stop_recording<R: Runtime>(
         progress_task.abort();
     } else {
         info!("ℹ️ No transcription task found to wait for");
+    }
+
+    // Step 2.5: Now that the backlog is drained, remove the transcript-update listener.
+    // Doing this AFTER the drain (it used to run before) ensures late segments produced
+    // while the backlog drained were still appended to the manager and transcripts.json.
+    {
+        use tauri::Listener;
+        if let Some(listener_id) = TRANSCRIPT_LISTENER_ID.lock().unwrap().take() {
+            app.unlisten(listener_id);
+            info!("✅ Transcript-update listener removed (after drain)");
+        }
     }
 
     // Step 3: Now safely unload Whisper model after ALL chunks are processed
@@ -705,6 +835,16 @@ pub async fn stop_recording<R: Runtime>(
         }),
     );
 
+    // Take the manager back from the global for good and perform final cleanup + save.
+    let manager_for_cleanup = {
+        let mut global_manager = RECORDING_MANAGER.lock().unwrap();
+        global_manager.take()
+    };
+
+    // meeting_id of the row Rust persisted, if any — sent to the frontend so it navigates
+    // to the saved meeting instead of creating a duplicate.
+    let mut saved_meeting_id: Option<String> = None;
+
     // Perform final cleanup with the manager if available
     let (meeting_folder, meeting_name) = if let Some(mut manager) = manager_for_cleanup {
         info!("🧹 Performing final cleanup and saving recording data");
@@ -733,6 +873,46 @@ pub async fn stop_recording<R: Runtime>(
             }
         }
 
+        // Step 4.1: Rust is the WRITER OF RECORD. Persist the meeting to SQLite now, so
+        // a meeting can never be lost by a webview error/reload/quit or the fragile
+        // frontend save gate. Reuses the same repository the frontend save path uses;
+        // the returned meeting_id is handed to the frontend so it does not save again.
+        let segments = manager.get_transcript_segments();
+        if segments.is_empty() {
+            info!("ℹ️ No transcript segments to persist at stop");
+        } else if let Some(state) = app.try_state::<crate::state::AppState>() {
+            let title = meeting_name
+                .clone()
+                .unwrap_or_else(|| "New Meeting".to_string());
+            let folder_path = meeting_folder
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string());
+            let api_segments = recording_segments_to_api(&segments);
+            match crate::database::repositories::transcript::TranscriptsRepository::save_transcript(
+                state.db_manager.pool(),
+                &title,
+                &api_segments,
+                folder_path,
+            )
+            .await
+            {
+                Ok(id) => {
+                    info!(
+                        "💾 Saved meeting to DB (writer of record) id={} with {} segments",
+                        id,
+                        api_segments.len()
+                    );
+                    saved_meeting_id = Some(id);
+                }
+                Err(e) => {
+                    // Non-fatal: the frontend save path remains as a fallback.
+                    error!("❌ Failed to save meeting to DB at stop: {} (frontend will fall back)", e);
+                }
+            }
+        } else {
+            warn!("⚠️ AppState/database not available at stop; frontend will save");
+        }
+
         (meeting_folder, meeting_name)
     } else {
         info!("ℹ️ No recording manager available for cleanup");
@@ -743,9 +923,9 @@ pub async fn stop_recording<R: Runtime>(
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);
 
-    // Step 4.5: Prepare metadata for frontend (NO database save)
-    // NOTE: We do NOT save to database here. The frontend will save after all transcripts are displayed.
-    // This ensures the user sees all transcripts streaming in before the database save happens.
+    // Step 4.5: Prepare metadata for the frontend. The DB row is already written above
+    // (saved_meeting_id); the frontend uses these to refresh/navigate, and only falls
+    // back to saving itself if no meeting_id arrived.
     let (folder_path_str, meeting_name_str) = match (&meeting_folder, &meeting_name) {
         (Some(path), Some(name)) => (
             Some(path.to_string_lossy().to_string()),
@@ -754,12 +934,10 @@ pub async fn stop_recording<R: Runtime>(
         _ => (None, None),
     };
 
-    info!("📤 Preparing recording metadata for frontend save");
+    info!("📤 Preparing recording metadata for frontend");
     info!("   folder_path: {:?}", folder_path_str);
     info!("   meeting_name: {:?}", meeting_name_str);
-
-    // Database save removed - frontend will handle this after receiving all transcripts
-    info!("ℹ️ Skipping database save in Rust - frontend will save after all transcripts received");
+    info!("   saved_meeting_id: {:?}", saved_meeting_id);
 
     // Step 5: Complete shutdown
     let _ = app.emit(
@@ -771,13 +949,15 @@ pub async fn stop_recording<R: Runtime>(
         }),
     );
 
-    // Emit final stop event with folder_path and meeting_name for frontend to save
+    // Emit final stop event. meeting_id is the row Rust already persisted; when present
+    // the frontend navigates to it and skips its own save (avoids a duplicate meeting).
     app.emit(
         "recording-stopped",
         serde_json::json!({
-            "message": "Recording stopped - frontend will save after all transcripts received",
+            "message": "Recording stopped",
             "folder_path": folder_path_str,
-            "meeting_name": meeting_name_str
+            "meeting_name": meeting_name_str,
+            "meeting_id": saved_meeting_id
         }),
     )
     .map_err(|e| e.to_string())?;

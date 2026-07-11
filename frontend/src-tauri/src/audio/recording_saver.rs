@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 
-use super::recording_state::AudioChunk;
+use super::recording_state::{AudioChunk, AudioError, RecordingState};
 use super::audio_processing::create_meeting_folder;
 use super::incremental_saver::IncrementalAudioSaver;
 
@@ -141,7 +141,11 @@ impl RecordingSaver {
     ///
     /// # Arguments
     /// * `auto_save` - If true, creates checkpoints and enables saving. If false, audio chunks are discarded.
-    pub fn start_accumulation(&mut self, auto_save: bool) -> mpsc::UnboundedSender<AudioChunk> {
+    pub fn start_accumulation(
+        &mut self,
+        auto_save: bool,
+        state: Arc<RecordingState>,
+    ) -> mpsc::UnboundedSender<AudioChunk> {
         if auto_save {
             info!("Initializing incremental audio saver for recording (auto-save ENABLED)");
         } else {
@@ -159,7 +163,11 @@ impl RecordingSaver {
                     Ok(()) => info!("Successfully initialized meeting folder with checkpoints"),
                     Err(e) => {
                         error!("Failed to initialize meeting folder: {}", e);
-                        // Continue anyway - will use fallback flat structure
+                        // There is NO flat-structure fallback: incremental_saver stays None,
+                        // so audio checkpoints and transcripts.json cannot be written for this
+                        // meeting. Surface it so the user isn't silently recording into a void;
+                        // the accumulation task below reports again if chunks can't be saved.
+                        state.report_error(AudioError::InitializationFailed);
                     }
                 }
             }
@@ -180,10 +188,22 @@ impl RecordingSaver {
         let is_saving_clone = self.is_saving.clone();
         let incremental_saver_arc = self.incremental_saver.clone();
         let save_audio = auto_save;
+        let error_state = state.clone();
 
         if let Some(mut receiver) = self.chunk_receiver.take() {
             tokio::spawn(async move {
                 info!("Recording saver accumulation task started (save_audio: {})", save_audio);
+
+                // Report a persistence failure at most once, so a broken ffmpeg/disk
+                // surfaces a single toast instead of one per ~600ms chunk. report_error
+                // fires the frontend `recording-error` callback (see set_error_callback).
+                let mut error_reported = false;
+                let mut report_once = || {
+                    if !error_reported {
+                        error_state.report_error(AudioError::ProcessingFailed);
+                        error_reported = true;
+                    }
+                };
 
                 while let Some(chunk) = receiver.recv().await {
                     // Check if we should continue
@@ -204,9 +224,13 @@ impl RecordingSaver {
                             let mut saver_guard = saver_arc.lock().await;
                             if let Err(e) = saver_guard.add_chunk(chunk) {
                                 error!("Failed to add chunk to incremental saver: {}", e);
+                                report_once();
                             }
                         } else {
+                            // No incremental saver means meeting-folder init failed above:
+                            // audio cannot be persisted at all. Warn once.
                             error!("Incremental saver not available while accumulating");
+                            report_once();
                         }
                     } else {
                         // auto_save is false: discard audio chunk (no-op)

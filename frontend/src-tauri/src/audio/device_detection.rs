@@ -483,7 +483,19 @@ mod tests {
             3840,
             48000,
         );
-        assert_eq!(timeout, Duration::from_millis(160));
+        // 3840/48000 = 0.08s isn't exactly representable in f32/f64, so the result is
+        // ~159.999996ms. Compare with a small tolerance instead of exact equality.
+        let expected = Duration::from_millis(160);
+        let diff = if timeout > expected {
+            timeout - expected
+        } else {
+            expected - timeout
+        };
+        assert!(
+            diff < Duration::from_millis(1),
+            "expected ~160ms, got {:?}",
+            timeout
+        );
     }
 
     #[test]

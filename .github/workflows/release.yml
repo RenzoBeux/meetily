@@ -35,29 +35,23 @@ jobs:
 
           # Check if base version tag exists
           if git tag -l "v${BASE_VERSION}" | grep -q .; then
-            echo "Tag v${BASE_VERSION} already exists, looking for minor updates..."
+            echo "Tag v${BASE_VERSION} already exists, bumping the patch component..."
 
-            # Find all existing minor versions (e.g., 0.1.1.1, 0.1.1.2, etc.)
-            LATEST_MINOR=0
-            for i in $(seq 1 100); do
-              if git tag -l "v${BASE_VERSION}.${i}" | grep -q .; then
-                LATEST_MINOR=$i
-              else
-                break
-              fi
+            # Bump the PATCH component so the result stays valid semver (e.g. 0.6.0 ->
+            # 0.6.1 -> 0.6.2). The previous scheme appended a 4th segment (0.6.0.1),
+            # which is NOT semver and desyncs the tag/manifest/binary and the updater.
+            MAJOR=$(echo "$BASE_VERSION" | cut -d. -f1)
+            MINOR=$(echo "$BASE_VERSION" | cut -d. -f2)
+            PATCH=$(echo "$BASE_VERSION" | cut -d. -f3)
+            NEXT_PATCH=$((PATCH + 1))
+
+            # Skip any patch versions that were already tagged.
+            while git tag -l "v${MAJOR}.${MINOR}.${NEXT_PATCH}" | grep -q .; do
+              NEXT_PATCH=$((NEXT_PATCH + 1))
             done
 
-            # Increment to next minor version
-            NEXT_MINOR=$((LATEST_MINOR + 1))
-
-            if [ $NEXT_MINOR -gt 100 ]; then
-              echo "ERROR: Maximum minor version (100) reached for ${BASE_VERSION}"
-              echo "Please update the version in tauri.conf.json"
-              exit 1
-            fi
-
-            VERSION="${BASE_VERSION}.${NEXT_MINOR}"
-            echo "Using minor update version: $VERSION"
+            VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+            echo "Using patch update version: $VERSION"
           else
             VERSION="${BASE_VERSION}"
             echo "Using base version: $VERSION"

@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { toast } from 'sonner';
 import type { PermissionStatus, OnboardingPermissions } from '@/types/onboarding';
 import { resolveOnboardingSummaryModelStatus } from '@/lib/onboarding-summary-model';
 
@@ -151,6 +152,26 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     loadOnboardingStatus();
     checkDatabaseStatus();
     initializeDatabaseInBackground();
+  }, []);
+
+  // Surface a fatal database-init failure emitted by the Rust startup path. The app
+  // no longer panics on a corrupt DB / bad migration; instead it stays alive and
+  // emits `database-init-failed` so the user is told (and their data may be
+  // recoverable from the rotating VACUUM INTO backups) instead of a silent crash.
+  useEffect(() => {
+    const unlisten = listen<string>('database-init-failed', (event) => {
+      console.error('[OnboardingContext] database-init-failed:', event.payload);
+      toast.error('Database failed to open', {
+        id: 'database-init-failed',
+        description:
+          'Your notes database could not be initialized. A recent backup may be available in the app data "backups" folder. Details: ' +
+          (event.payload || 'unknown error'),
+        duration: Infinity,
+      });
+    });
+    return () => {
+      unlisten.then((fn) => fn()).catch(() => {});
+    };
   }, []);
 
   // Initialize database silently in background (moved from SetupOverviewStep)

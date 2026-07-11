@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use anyhow::Result;
 use log::{debug, error, info, warn};
+use tauri::Emitter;
 
 use super::devices::{AudioDevice, list_audio_devices};
 
@@ -74,7 +75,9 @@ impl RecordingManager {
         // CRITICAL FIX: Create recording sender for pre-mixed audio from pipeline
         // Pipeline will mix mic + system audio professionally and send to this channel
         // Pass auto_save to control whether audio checkpoints are created
-        let recording_sender = self.recording_saver.start_accumulation(auto_save);
+        let recording_sender = self
+            .recording_saver
+            .start_accumulation(auto_save, self.state.clone());
 
         // Start recording state first
         self.state.start_recording()?;
@@ -311,7 +314,17 @@ impl RecordingManager {
             }
             Err(e) => {
                 error!("Failed to save recording: {}", e);
-                // Don't fail the stop operation if saving fails
+                // Don't fail the stop operation, but surface it: the audio file may be
+                // missing/incomplete even though the meeting was saved. The frontend
+                // listens for `recording-error` and shows a toast so the user can act
+                // (e.g. re-merge checkpoints) instead of discovering silent audio loss.
+                let _ = app.emit(
+                    "recording-error",
+                    serde_json::json!({
+                        "kind": "audio_save_failed",
+                        "message": format!("Failed to finalize recording audio: {}", e),
+                    }),
+                );
             }
         }
 
@@ -350,7 +363,14 @@ impl RecordingManager {
             }
             Err(e) => {
                 error!("Failed to save recording: {}", e);
-                // Don't fail the stop operation if saving fails
+                // Surface the finalize failure (see save_recording_only for rationale).
+                let _ = app.emit(
+                    "recording-error",
+                    serde_json::json!({
+                        "kind": "audio_save_failed",
+                        "message": format!("Failed to finalize recording audio: {}", e),
+                    }),
+                );
             }
         }
 

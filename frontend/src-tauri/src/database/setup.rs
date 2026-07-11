@@ -30,6 +30,15 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
             .await
             .map_err(|e| format!("Failed to initialize database manager: {}", e))?;
 
+        // Rotating startup backup (best-effort; keep the last 5 snapshots). Uses
+        // VACUUM INTO, which is consistent even with an active WAL. This is the DB's
+        // safety net: a corrupt-on-next-launch DB can be restored from here.
+        if let Ok(app_data_dir) = app.path().app_data_dir() {
+            db_manager
+                .backup_to_dir(&app_data_dir.join("backups"), 5)
+                .await;
+        }
+
         app.manage(AppState { db_manager });
         info!("Database initialized successfully");
     }

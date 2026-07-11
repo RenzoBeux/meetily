@@ -80,10 +80,11 @@ export function useRecordingStop(
           message: string;
           folder_path?: string;
           meeting_name?: string;
+          meeting_id?: string | null;
         }>('recording-stopped', async (event) => {
           // Create promise that resolves when sessionStorage is set (prevents race condition)
           recordingStoppedDataRef.current = (async () => {
-            const { folder_path, meeting_name } = event.payload;
+            const { folder_path, meeting_name, meeting_id } = event.payload;
 
             // Store folder_path and meeting_name for later use in handleRecordingStop
             if (folder_path) {
@@ -91,6 +92,13 @@ export function useRecordingStop(
             }
             if (meeting_name) {
               sessionStorage.setItem('last_recording_meeting_name', meeting_name);
+            }
+            // Rust now persists the meeting itself (writer of record) and hands back its
+            // id. When present, the frontend must NOT save again (would duplicate the row).
+            if (meeting_id) {
+              sessionStorage.setItem('last_recording_meeting_id', meeting_id);
+            } else {
+              sessionStorage.removeItem('last_recording_meeting_id');
             }
           })();
 
@@ -224,44 +232,49 @@ export function useRecordingStop(
       console.log('Waiting for transcript state updates to complete...');
       await new Promise(resolve => setTimeout(resolve, 500));
 
-      // Save to SQLite
-      // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
-      // This ensures user sees all transcripts streaming in before database save
-      if (isCallApi && transcriptionComplete == true) {
+      // Persist to SQLite. Rust is now the writer of record: it saves the meeting at
+      // stop and hands back its id via the recording-stopped event. So we do NOT gate on
+      // the (unreliable) transcriptionComplete flag anymore — we just reconcile:
+      //   - if Rust already saved (meeting_id present), skip the save, use that id;
+      //   - otherwise fall back to saving from frontend state.
+      const freshTranscripts = [...transcriptsRef.current];
+      const savedMeetingId = sessionStorage.getItem('last_recording_meeting_id');
+
+      if (isCallApi && (savedMeetingId || freshTranscripts.length > 0)) {
 
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
-
-        // Get fresh transcript state (ALL transcripts including late ones)
-        const freshTranscripts = [...transcriptsRef.current];
 
         // Get folder_path and meeting_name from recording-stopped event
         const folderPath = sessionStorage.getItem('last_recording_folder_path');
         const savedMeetingName = sessionStorage.getItem('last_recording_meeting_name');
 
-        console.log('💾 Saving COMPLETE transcripts to database...', {
-          transcript_count: freshTranscripts.length,
-          meeting_name: savedMeetingName || meetingTitle,
-          folder_path: folderPath,
-          sample_text: freshTranscripts.length > 0 ? freshTranscripts[0].text.substring(0, 50) + '...' : 'none',
-          last_transcript: freshTranscripts.length > 0 ? freshTranscripts[freshTranscripts.length - 1].text.substring(0, 30) + '...' : 'none',
-        });
-
         try {
-          const responseData = await storageService.saveMeeting(
-            savedMeetingName || meetingTitle || 'New Meeting',  // PREFER savedMeetingName (backend source)
-            freshTranscripts,
-            folderPath
-          );
+          let meetingId: string;
 
-          const meetingId = responseData.meeting_id;
-          if (!meetingId) {
-            console.error('No meeting_id in response:', responseData);
-            throw new Error('No meeting ID received from save operation');
+          if (savedMeetingId) {
+            // Rust already persisted this meeting — reuse its id, do NOT save again
+            // (a second save would create a duplicate meeting row).
+            meetingId = savedMeetingId;
+            console.log('✅ Meeting already saved by Rust (writer of record), id:', meetingId);
+          } else {
+            // Fallback: Rust save failed or was unavailable — save from frontend state.
+            console.log('💾 Rust did not save; falling back to frontend save...', {
+              transcript_count: freshTranscripts.length,
+              meeting_name: savedMeetingName || meetingTitle,
+              folder_path: folderPath,
+            });
+            const responseData = await storageService.saveMeeting(
+              savedMeetingName || meetingTitle || 'New Meeting',  // PREFER savedMeetingName (backend source)
+              freshTranscripts,
+              folderPath
+            );
+            meetingId = responseData.meeting_id;
+            if (!meetingId) {
+              console.error('No meeting_id in response:', responseData);
+              throw new Error('No meeting ID received from save operation');
+            }
+            console.log('✅ Fallback save succeeded, meeting id:', meetingId);
           }
-
-          console.log('✅ Successfully saved COMPLETE meeting with ID:', meetingId);
-          console.log('   Transcripts:', freshTranscripts.length);
-          console.log('   folder_path:', folderPath);
 
           // Mark meeting as saved in IndexedDB (for recovery system)
           await markMeetingAsSaved();
@@ -269,6 +282,7 @@ export function useRecordingStop(
           // Clean up session storage
           sessionStorage.removeItem('last_recording_folder_path');
           sessionStorage.removeItem('last_recording_meeting_name');
+          sessionStorage.removeItem('last_recording_meeting_id');
           // Clean up IndexedDB meeting ID (redundant with markMeetingAsSaved cleanup, but ensures cleanup)
           sessionStorage.removeItem('indexeddb_current_meeting_id');
 
@@ -322,7 +336,13 @@ export function useRecordingStop(
           throw saveError;
         }
       } else {
-        // No save needed, go back to IDLE
+        // Nothing to save. If we somehow got here with transcripts and no save, warn the
+        // user instead of silently dropping the meeting (the old behavior).
+        if (freshTranscripts.length > 0 && isCallApi) {
+          toast.error('Recording may not have been saved', {
+            description: 'The meeting was recorded but could not be saved automatically. Check the Meetings list.',
+          });
+        }
         setStatus(RecordingStatus.IDLE);
       }
 

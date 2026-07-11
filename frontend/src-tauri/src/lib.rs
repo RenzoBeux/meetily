@@ -63,7 +63,7 @@ use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
 use notifications::commands::NotificationManagerState;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::RwLock;
 
 static RECORDING_FLAG: AtomicBool = AtomicBool::new(false);
@@ -499,11 +499,23 @@ pub fn run() {
             //     });
             // }
 
-            // Initialize database (handles first launch detection and conditional setup)
-            tauri::async_runtime::block_on(async {
+            // Initialize database (handles first launch detection and conditional setup).
+            // Do NOT panic on failure: a bad migration or corrupt DB must not crash the
+            // app and lock the user out of their entire history. Log it and emit a
+            // recoverable `database-init-failed` event the UI can react to.
+            if let Err(e) = tauri::async_runtime::block_on(async {
                 database::setup::initialize_database_on_startup(&_app.handle()).await
-            })
-            .expect("Failed to initialize database");
+            }) {
+                log::error!("Failed to initialize database: {}", e);
+                let handle = _app.handle().clone();
+                let msg = e.clone();
+                tauri::async_runtime::spawn(async move {
+                    // Delay so the window and React listeners are ready (mirrors the
+                    // first-launch-detected emission in database::setup).
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    let _ = handle.emit("database-init-failed", msg);
+                });
+            }
 
             // Initialize bundled templates directory for dynamic template discovery
             log::info!("Initializing bundled templates directory...");
@@ -766,6 +778,11 @@ pub fn run() {
                 tauri::RunEvent::Exit => {
                     log::info!("Application exiting, cleaning up resources...");
                     tauri::async_runtime::block_on(async {
+                        // Guard against losing an in-progress recording on quit: persist
+                        // whatever transcript the manager currently holds BEFORE the DB is
+                        // checkpointed and closed below. No-op if not recording.
+                        audio::recording_commands::save_active_recording_on_exit(_app_handle).await;
+
                         // Clean up database connection and checkpoint WAL
                         if let Some(app_state) = _app_handle.try_state::<state::AppState>() {
                             log::info!("Starting database cleanup...");

@@ -43,6 +43,23 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     transcriptsRef.current = transcripts;
   }, [transcripts]);
 
+  // Restore the IndexedDB journaling id after a mid-recording webview reload.
+  // `currentMeetingId` lives only in React state (set in onRecordingStarted), so a
+  // reload wipes it and journaling silently stops. sessionStorage still holds the id
+  // (it is cleared only on save), so recover it here; the main-listener effect keys
+  // on currentMeetingId and will re-register with the restored value.
+  useEffect(() => {
+    if (!currentMeetingId) {
+      const storedId = sessionStorage.getItem('indexeddb_current_meeting_id');
+      if (storedId) {
+        console.log('[Recovery] Restoring IndexedDB meeting id after reload:', storedId);
+        setCurrentMeetingId(storedId);
+      }
+    }
+    // Run once on mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Smart auto-scroll: Track user scroll position
   useEffect(() => {
     const handleScroll = () => {
@@ -321,9 +338,12 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           transcriptBuffer.set(update.sequence_id, newTranscript);
           console.log(`✅ MAIN LISTENER: Buffered transcript with sequence_id ${update.sequence_id}. Buffer size: ${transcriptBuffer.size}, Last processed: ${lastProcessedSequence}`);
 
-          // Save to IndexedDB (non-blocking)
-          if (currentMeetingId) {
-            indexedDBService.saveTranscript(currentMeetingId, update)
+          // Save to IndexedDB (non-blocking). Fall back to the sessionStorage id so
+          // journaling keeps working in the brief window after a reload before the
+          // restored currentMeetingId state settles.
+          const journalId = currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id');
+          if (journalId) {
+            indexedDBService.saveTranscript(journalId, update)
               .catch(err => console.warn('IndexedDB save failed:', err));
           }
 

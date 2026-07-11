@@ -7,6 +7,7 @@ import { motion } from 'framer-motion';
 import { Play, Pause, Square, Mic, AlertCircle, X } from 'lucide-react';
 import { ProcessRequest, SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
+import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
@@ -175,7 +176,10 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         }
       }
       setIsProcessing(false);
-      onRecordingStop(false);
+      // Even if the stop invoke rejected (e.g. its long timeout), attempt to save rather
+      // than discard. If Rust already persisted the meeting the save path reconciles via
+      // the returned meeting_id; otherwise it falls back to the frontend transcript state.
+      onRecordingStop(true);
     } finally {
       setIsStopping(false);
     }
@@ -259,8 +263,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             return newCount;
           });
           setIsProcessing(false);
-          console.log('Calling onRecordingStop(false) due to transcript error');
-          onRecordingStop(false);
+          // Save (true), don't discard: a transient transcript error must not cost the
+          // whole meeting. If there is content it is persisted; if not, the stop flow
+          // simply goes idle.
+          console.log('Calling onRecordingStop(true) due to transcript error (save partial)');
+          onRecordingStop(true);
           if (onTranscriptionError) {
             onTranscriptionError(errorMessage);
           }
@@ -288,8 +295,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             return newCount;
           });
           setIsProcessing(false);
-          console.log('Calling onRecordingStop(false) due to transcription error');
-          onRecordingStop(false);
+          // Only a start-time, actionable model-not-ready error should abort without
+          // saving (there is no content yet, and the page shows the model selector).
+          // A runtime/transient transcription error must save the partial meeting.
+          console.log(`Calling onRecordingStop(${!isActionable}) due to transcription error`);
+          onRecordingStop(!isActionable);
 
           // For actionable errors (like model loading failures), the main page will handle showing the model selector
           // For regular errors, they are handled by useModalState global listener which shows a toast
@@ -308,10 +318,27 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           setSpeechDetected(true);
         });
 
+        // Recording error listener - surfaces backend audio/persistence failures
+        // (dead device, disk full, encode/finalize failure) that used to be log-only.
+        // Payload is either a plain string (RecordingState error callback) or an
+        // object { kind, message } (finalize/save failures). This is informational:
+        // it does NOT stop the recording, so an in-progress meeting is never discarded.
+        const recordingErrorUnsubscribe = await listen('recording-error', (event) => {
+          console.error('recording-error event received:', event.payload);
+          const payload = event.payload as unknown;
+          const message =
+            typeof payload === 'string'
+              ? payload
+              : (payload as { message?: string })?.message || 'A recording error occurred';
+          // Stable id so repeated errors replace rather than stack into a toast pile.
+          toast.error('Recording problem', { id: 'recording-error', description: message });
+        });
+
         unsubscribes = [
           transcriptErrorUnsubscribe,
           transcriptionErrorUnsubscribe,
-          speechDetectedUnsubscribe
+          speechDetectedUnsubscribe,
+          recordingErrorUnsubscribe
         ];
         console.log('Recording event listeners set up successfully');
       } catch (error) {

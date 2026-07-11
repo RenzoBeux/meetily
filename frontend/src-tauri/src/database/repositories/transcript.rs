@@ -420,7 +420,8 @@ impl TranscriptsRepository {
             "SELECT m.id, m.title, t.transcript, t.timestamp
              FROM meetings m
              JOIN transcripts t ON m.id = t.meeting_id
-             WHERE LOWER(t.transcript) LIKE ?",
+             WHERE LOWER(t.transcript) LIKE ?
+             LIMIT 100",
         )
         .bind(&search_query)
         .fetch_all(pool)
@@ -429,7 +430,9 @@ impl TranscriptsRepository {
         let results = rows
             .into_iter()
             .map(|(id, title, transcript, timestamp)| {
-                let match_context = Self::get_match_context(&transcript, query);
+                // Reuse the UTF-8-safe snippet helper (char-index based) so accented
+                // text (á/é/ñ) at the window edge never panics via a byte-boundary slice.
+                let match_context = crate::mcp::tools::snippet(&transcript, query);
                 TranscriptSearchResult {
                     id,
                     title,
@@ -441,28 +444,56 @@ impl TranscriptsRepository {
 
         Ok(results)
     }
+}
 
-    /// Helper function to extract a snippet of text around the first match of a query.
-    fn get_match_context(transcript: &str, query: &str) -> String {
-        let transcript_lower = transcript.to_lowercase();
-        let query_lower = query.to_lowercase();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-        match transcript_lower.find(&query_lower) {
-            Some(match_index) => {
-                let start_index = match_index.saturating_sub(100);
-                let end_index = (match_index + query.len() + 100).min(transcript.len());
-
-                let mut context = String::new();
-                if start_index > 0 {
-                    context.push_str("...");
-                }
-                context.push_str(&transcript[start_index..end_index]);
-                if end_index < transcript.len() {
-                    context.push_str("...");
-                }
-                context
-            }
-            None => transcript.chars().take(200).collect(), // Fallback to the start of the transcript
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for ddl in [
+            "CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT)",
+            "CREATE TABLE transcripts (id TEXT, meeting_id TEXT, transcript TEXT, timestamp TEXT)",
+        ] {
+            sqlx::query(ddl).execute(&pool).await.unwrap();
         }
+        pool
+    }
+
+    /// Regression: a transcript full of accented (multi-byte) text must not panic
+    /// the search command. The previous byte-slicing helper crashed whenever an
+    /// accented char straddled the ±100 window; snippet() is char-index safe.
+    #[tokio::test]
+    async fn search_transcripts_is_utf8_safe_for_spanish() {
+        let pool = test_pool().await;
+        // Long accented transcript so the match sits >100 chars from the start,
+        // forcing the context window to slice inside multi-byte territory.
+        let transcript = format!(
+            "{}reunión de mañana con el equipo español{}",
+            "é".repeat(150),
+            "ñ".repeat(150)
+        );
+        sqlx::query("INSERT INTO meetings (id, title) VALUES ('m1', 'Reunión')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('t1', 'm1', ?, '2026-07-11')")
+            .bind(&transcript)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Must return Ok (not panic/hang) and find the match.
+        let results = TranscriptsRepository::search_transcripts(&pool, "español")
+            .await
+            .expect("search must not error");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].match_context.contains("español"));
     }
 }
