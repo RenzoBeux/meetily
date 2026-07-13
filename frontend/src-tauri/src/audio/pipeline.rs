@@ -663,6 +663,11 @@ pub struct AudioPipeline {
     // leaves room for proper diarization later to refine the system stream.
     mic_vad_processor: ContinuousVadProcessor,
     sys_vad_processor: ContinuousVadProcessor,
+    // EBU R128 normalizer applied to the SYSTEM stream *only for its VAD/transcription
+    // copy* — a quiet remote participant otherwise gets VAD-gated out and mis-heard by
+    // Whisper. The recording (ring-buffer mix) keeps the raw system audio. `None` if
+    // construction fails (normalization simply skipped).
+    sys_loudness_normalizer: Option<LoudnessNormalizer>,
     sample_rate: u32,
     chunk_id_counter: u64,
     // Performance optimization: reduce logging frequency
@@ -725,6 +730,18 @@ impl AudioPipeline {
             }
         };
 
+        // Loudness normalizer for the system stream's VAD/transcription copy only.
+        let sys_loudness_normalizer = match LoudnessNormalizer::new(1, sample_rate) {
+            Ok(n) => {
+                info!("System-audio loudness normalizer enabled for VAD (target -23 LUFS)");
+                Some(n)
+            }
+            Err(e) => {
+                warn!("System-audio loudness normalizer unavailable ({e}); VAD uses raw system audio");
+                None
+            }
+        };
+
         // Ring buffer aligns the mic + system streams into equal-sized windows.
         let ring_buffer = AudioMixerRingBuffer::new(sample_rate);
 
@@ -737,6 +754,7 @@ impl AudioPipeline {
             state,
             mic_vad_processor,
             sys_vad_processor,
+            sys_loudness_normalizer,
             sample_rate,
             chunk_id_counter: 0,
             // Performance optimization: reduce logging frequency
@@ -813,7 +831,14 @@ impl AudioPipeline {
                             // Both VADs receive equal-sized synchronized windows from the ring
                             // buffer, so their internal sample timelines stay aligned.
                             let mic_vad_result = self.mic_vad_processor.process_audio(&mic_window);
-                            let sys_vad_result = self.sys_vad_processor.process_audio(&sys_window);
+                            // System VAD + transcription get a loudness-normalized copy so a
+                            // quiet remote participant isn't gated out; recording stays raw.
+                            let sys_norm = self
+                                .sys_loudness_normalizer
+                                .as_mut()
+                                .map(|n| n.normalize_loudness(&sys_window));
+                            let sys_input: &[f32] = sys_norm.as_deref().unwrap_or(&sys_window);
+                            let sys_vad_result = self.sys_vad_processor.process_audio(sys_input);
 
                             for (vad_result, source_device) in [
                                 (mic_vad_result, DeviceType::Microphone),
@@ -905,7 +930,14 @@ impl AudioPipeline {
         // flushing. Idempotent — drain_partial yields None once the buffer is empty.
         if let Some((mic_partial, sys_partial)) = self.ring_buffer.drain_partial() {
             let mic_vad_result = self.mic_vad_processor.process_audio(&mic_partial);
-            let sys_vad_result = self.sys_vad_processor.process_audio(&sys_partial);
+            // Normalize a copy for the system VAD only; the raw sys_partial below still
+            // goes to the recording faithfully.
+            let sys_norm = self
+                .sys_loudness_normalizer
+                .as_mut()
+                .map(|n| n.normalize_loudness(&sys_partial));
+            let sys_input: &[f32] = sys_norm.as_deref().unwrap_or(&sys_partial);
+            let sys_vad_result = self.sys_vad_processor.process_audio(sys_input);
             for (vad_result, source_device) in [
                 (mic_vad_result, DeviceType::Microphone),
                 (sys_vad_result, DeviceType::System),

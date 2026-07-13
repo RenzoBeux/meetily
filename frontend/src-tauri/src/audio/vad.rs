@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Result};
 use silero_rs::{VadConfig, VadSession, VadTransition};
 use log::{debug, info, warn};
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -26,6 +29,13 @@ pub struct ContinuousVadProcessor {
     speech_start_sample: usize,
     // State tracking for smart logging
     last_logged_state: bool,
+    // Persistent high-quality resampler (input rate -> 16kHz). None when the input
+    // is already 16kHz or construction failed (then the legacy filter is used).
+    // Stateful, so it has no per-chunk boundary discontinuity; the sub-chunk
+    // remainder stays buffered between calls and is drained in flush().
+    resampler: Option<SincFixedIn<f32>>,
+    resampler_input_buffer: Vec<f32>,
+    resampler_chunk_size: usize,
 }
 
 impl ContinuousVadProcessor {
@@ -61,6 +71,34 @@ impl ContinuousVadProcessor {
         let session = VadSession::new(config)
             .map_err(|e| anyhow!("Failed to create VAD session: {:?}", e))?;
 
+        // Persistent streaming sinc resampler (input -> 16kHz), matching the
+        // capture/pipeline resampler's quality. Replaces the old per-chunk
+        // moving-average, which reset its filter + interpolation phase at every
+        // chunk boundary (audible discontinuities, weak anti-aliasing).
+        const RESAMPLER_CHUNK_SIZE: usize = 1024;
+        let resampler = if input_sample_rate != VAD_SAMPLE_RATE {
+            let ratio = VAD_SAMPLE_RATE as f64 / input_sample_rate as f64;
+            let params = SincInterpolationParameters {
+                sinc_len: 256,
+                f_cutoff: 0.95,
+                interpolation: SincInterpolationType::Cubic,
+                oversampling_factor: 256,
+                window: WindowFunction::BlackmanHarris2,
+            };
+            match SincFixedIn::<f32>::new(ratio, 2.0, params, RESAMPLER_CHUNK_SIZE, 1) {
+                Ok(r) => {
+                    info!("VAD persistent sinc resampler: {}Hz -> 16kHz", input_sample_rate);
+                    Some(r)
+                }
+                Err(e) => {
+                    warn!("VAD resampler init failed ({e}); using legacy filter fallback");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // VAD uses 30ms chunks at 16kHz (480 samples)
         let vad_chunk_size = (VAD_SAMPLE_RATE as f32 * 0.03) as usize; // 480 samples
 
@@ -79,18 +117,18 @@ impl ContinuousVadProcessor {
             speech_start_sample: 0,
             // Initialize state tracking
             last_logged_state: false,
+            resampler,
+            resampler_input_buffer: Vec::with_capacity(RESAMPLER_CHUNK_SIZE * 2),
+            resampler_chunk_size: RESAMPLER_CHUNK_SIZE,
         })
     }
 
     /// Process incoming audio samples and return any complete speech segments
     /// Handles resampling from input sample rate to 16kHz for VAD processing
     pub fn process_audio(&mut self, samples: &[f32]) -> Result<Vec<SpeechSegment>> {
-        // Resample to 16kHz if needed
-        let resampled_audio = if self.sample_rate == 16000 {
-            samples.to_vec()
-        } else {
-            self.resample_to_16k(samples)?
-        };
+        // Resample to 16kHz if needed (stateful streaming; buffers a sub-chunk
+        // remainder between calls, drained in flush()).
+        let resampled_audio = self.resample_stream(samples)?;
 
         self.buffer.extend_from_slice(&resampled_audio);
         let mut completed_segments = Vec::new();
@@ -109,8 +147,50 @@ impl ContinuousVadProcessor {
         Ok(completed_segments)
     }
 
-    /// Improved resampling from input sample rate to 16kHz with anti-aliasing
-    /// Uses linear interpolation and basic low-pass filtering for better quality
+    /// Stateful streaming resample of `samples` (at `self.sample_rate`) to 16kHz.
+    /// Buffers input into fixed-size resampler chunks; the sub-chunk remainder
+    /// stays buffered for the next call (or `flush()`), so there is no per-chunk
+    /// boundary artifact. Falls back to the legacy filter if the persistent
+    /// resampler could not be constructed.
+    fn resample_stream(&mut self, samples: &[f32]) -> Result<Vec<f32>> {
+        if self.sample_rate == 16000 {
+            return Ok(samples.to_vec());
+        }
+        if self.resampler.is_none() {
+            return self.resample_to_16k(samples);
+        }
+
+        self.resampler_input_buffer.extend_from_slice(samples);
+
+        // Extract full chunks first, so the buffer borrow is released before we
+        // borrow the resampler (disjoint field borrows).
+        let chunk_size = self.resampler_chunk_size;
+        let mut chunks: Vec<Vec<f32>> = Vec::new();
+        while self.resampler_input_buffer.len() >= chunk_size {
+            chunks.push(self.resampler_input_buffer.drain(0..chunk_size).collect());
+        }
+
+        let mut out = Vec::new();
+        if let Some(resampler) = self.resampler.as_mut() {
+            for chunk in chunks {
+                match resampler.process(&[chunk], None) {
+                    Ok(mut waves) => {
+                        if let Some(o) = waves.pop() {
+                            out.extend_from_slice(&o);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("VAD resampler process failed: {e}");
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Legacy fallback resampler (per-chunk moving-average + linear interpolation),
+    /// used only when the persistent sinc resampler could not be constructed.
     fn resample_to_16k(&self, samples: &[f32]) -> Result<Vec<f32>> {
         if self.sample_rate == 16000 {
             return Ok(samples.to_vec());
@@ -165,6 +245,22 @@ impl ContinuousVadProcessor {
               self.in_speech, self.current_speech.len(), self.buffer.len(), self.speech_segments.len());
 
         let mut completed_segments = Vec::new();
+
+        // Drain the resampler's buffered remainder (pad to a full chunk) so the
+        // trailing partial input at end-of-recording isn't lost, then feed the
+        // resampled tail into the VAD buffer below.
+        if self.resampler.is_some() && !self.resampler_input_buffer.is_empty() {
+            let chunk_size = self.resampler_chunk_size;
+            let mut tail: Vec<f32> = std::mem::take(&mut self.resampler_input_buffer);
+            tail.resize(chunk_size, 0.0);
+            if let Some(resampler) = self.resampler.as_mut() {
+                if let Ok(mut waves) = resampler.process(&[tail], None) {
+                    if let Some(o) = waves.pop() {
+                        self.buffer.extend_from_slice(&o);
+                    }
+                }
+            }
+        }
 
         // Process any remaining buffered audio
         if !self.buffer.is_empty() {
@@ -411,6 +507,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 9 kHz tone at 48 kHz is above the 16 kHz target's 8 kHz Nyquist, so the
+    /// anti-aliasing sinc resampler must strongly attenuate it (the old
+    /// moving-average filter let far more through, causing aliasing).
+    #[test]
+    fn sinc_resampler_attenuates_above_nyquist() {
+        let input_rate = 48_000u32;
+        let freq = 9_000.0f32;
+        let n = 48_000usize; // 1 second
+        let input: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / input_rate as f32).sin())
+            .collect();
+
+        let mut proc = ContinuousVadProcessor::new(input_rate, 400).unwrap();
+        let mut out = proc.resample_stream(&input).unwrap();
+        // Push zeros to flush the buffered remainder through the resampler.
+        out.extend(proc.resample_stream(&vec![0.0; 2048]).unwrap());
+
+        let rms = |s: &[f32]| (s.iter().map(|x| x * x).sum::<f32>() / s.len().max(1) as f32).sqrt();
+        let in_rms = rms(&input);
+        let out_rms = rms(&out);
+        assert!(out.len() > 1000, "should produce resampled output, got {}", out.len());
+        assert!(
+            out_rms < in_rms * 0.3,
+            "above-Nyquist tone must be attenuated: in_rms={in_rms}, out_rms={out_rms}"
+        );
+    }
 
     /// Generate synthetic speech-like audio with alternating speech/silence
     fn generate_test_audio_with_speech(duration_seconds: f32, sample_rate: u32) -> Vec<f32> {
