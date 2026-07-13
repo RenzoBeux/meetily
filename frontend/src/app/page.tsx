@@ -41,9 +41,9 @@ export default function Home() {
 
   // Hooks
   const { hasMicrophone } = usePermissionCheck();
-  const { setIsMeetingActive, isCollapsed: sidebarCollapsed, refetchMeetings } = useSidebar();
+  const { isCollapsed: sidebarCollapsed, refetchMeetings } = useSidebar();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
-  const { isRecordingDisabled, setIsRecordingDisabled } = useRecordingStateSync(isRecording, setIsRecordingState, setIsMeetingActive);
+  const { isRecordingDisabled, setIsRecordingDisabled } = useRecordingStateSync();
   const { handleRecordingStart } = useRecordingStart(isRecording, setIsRecordingState, showModal);
 
   // Get handleRecordingStop function and setIsStopping (state comes from global context)

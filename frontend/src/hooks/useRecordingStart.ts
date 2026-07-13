@@ -226,7 +226,7 @@ export function useRecordingStart(
           } catch (error) {
             console.error('Failed to auto-start recording:', error);
             setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to auto-start recording');
-            alert('Failed to start recording. Check console for details.');
+            toast.error('Failed to start recording. Check console for details.');
           } finally {
             setIsAutoStarting(false);
           }
@@ -309,7 +309,7 @@ export function useRecordingStart(
       } catch (error) {
         console.error('Failed to start recording from sidebar:', error);
         setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to start recording from sidebar');
-        alert('Failed to start recording. Check console for details.');
+        toast.error('Failed to start recording. Check console for details.');
       } finally {
         setIsAutoStarting(false);
       }

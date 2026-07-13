@@ -81,7 +81,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         console.log('Tauri is initialized and ready, is_recording result:', result);
       } catch (error) {
         console.error('Tauri initialization error:', error);
-        alert('Failed to initialize recording. Please check the console for details.');
+        toast.error('Failed to initialize recording. Please check the console for details.');
       }
     };
     checkTauri();
@@ -218,7 +218,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       console.log('Recording paused successfully');
     } catch (error) {
       console.error('Failed to pause recording:', error);
-      alert('Failed to pause recording. Please check the console for details.');
+      toast.error('Failed to pause recording. Please check the console for details.');
     } finally {
       setIsPausing(false);
     }
@@ -236,7 +236,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       console.log('Recording resumed successfully');
     } catch (error) {
       console.error('Failed to resume recording:', error);
-      alert('Failed to resume recording. Please check the console for details.');
+      toast.error('Failed to resume recording. Please check the console for details.');
     } finally {
       setIsResuming(false);
     }

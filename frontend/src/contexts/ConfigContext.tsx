@@ -46,6 +46,9 @@ interface ConfigContextType {
   modelConfig: ModelConfig;
   setModelConfig: (config: ModelConfig | ((prev: ModelConfig) => ModelConfig)) => void;
 
+  // True while the persisted model config is still loading on mount.
+  isModelConfigLoading: boolean;
+
   // Transcript model configuration
   transcriptModelConfig: TranscriptModelProps;
   setTranscriptModelConfig: (config: TranscriptModelProps | ((prev: TranscriptModelProps) => TranscriptModelProps)) => void;
@@ -103,6 +106,11 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     whisperModel: 'large-v3',
     ollamaEndpoint: null
   });
+
+  // True until the persisted model config has been loaded from disk on mount.
+  // Auto-summary must wait for this so it never fires against the `ollama/
+  // llama3.2` placeholder defaults before the real provider is known.
+  const [isModelConfigLoading, setIsModelConfigLoading] = useState(true);
 
   // Transcript model configuration state
   const [transcriptModelConfig, setTranscriptModelConfig] = useState<TranscriptModelProps>({
@@ -286,6 +294,9 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
         }
       } catch (error) {
         console.error('Failed to fetch saved model config in ConfigContext:', error);
+      } finally {
+        // Runs on every path, including the custom-openai early return.
+        setIsModelConfigLoading(false);
       }
     };
     fetchModelConfig();
@@ -480,6 +491,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   const value: ConfigContextType = useMemo(() => ({
     modelConfig,
     setModelConfig,
+    isModelConfigLoading,
     isAutoSummary,
     toggleIsAutoSummary,
     providerApiKeys,
@@ -504,6 +516,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     updateNotificationSettings,
   }), [
     modelConfig,
+    isModelConfigLoading,
     isAutoSummary,
     toggleIsAutoSummary,
     providerApiKeys,

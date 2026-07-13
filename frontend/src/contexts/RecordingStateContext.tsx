@@ -88,14 +88,31 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     try {
       const backendState = await recordingService.getRecordingState();
 
-      setState(prev => ({
-        ...prev,
-        isRecording: backendState.is_recording,
-        isPaused: backendState.is_paused,
-        isActive: backendState.is_active,
-        recordingDuration: backendState.recording_duration,
-        activeDuration: backendState.active_duration,
-      }));
+      setState(prev => {
+        // If a page reload landed us in IDLE/ERROR while the backend is still
+        // recording, restore the RECORDING status. Guard against clobbering an
+        // in-flight STOPPING/PROCESSING/SAVING transition (only lift from a
+        // resting state).
+        const shouldRestoreStatus =
+          backendState.is_recording &&
+          (prev.status === RecordingStatus.IDLE || prev.status === RecordingStatus.ERROR);
+
+        return {
+          ...prev,
+          isRecording: backendState.is_recording,
+          isPaused: backendState.is_paused,
+          isActive: backendState.is_active,
+          recordingDuration: backendState.recording_duration,
+          activeDuration: backendState.active_duration,
+          status: shouldRestoreStatus ? RecordingStatus.RECORDING : prev.status,
+        };
+      });
+
+      // Keep polling alive whenever the backend reports an active recording
+      // (e.g. after a reload that missed the onRecordingStarted event).
+      if (backendState.is_recording && !pollingIntervalRef.current) {
+        startPolling();
+      }
 
       console.log('[RecordingStateContext] Synced with backend:', backendState);
     } catch (error) {

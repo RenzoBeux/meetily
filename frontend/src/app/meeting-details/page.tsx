@@ -350,8 +350,10 @@ function MeetingDetailsContent() {
     );
   }
 
-  // Show loading spinner while initial data loads
-  if ((isLoading || isLoadingTranscripts) || !meetingDetails) {
+  // Full-screen spinner ONLY on the true initial load (no data yet). During a
+  // refetch (transcripts reloading while meetingDetails is already populated) we
+  // keep PageContent — and any open dialog — mounted instead of unmounting it.
+  if (!meetingDetails) {
     return <div className="flex items-center justify-center h-[calc(100vh-var(--titlebar-height))]">
       <LoaderIcon className="animate-spin size-6 " />
     </div>;

@@ -67,7 +67,7 @@ export default function PageContent({
   const openModelSettingsRef = useRef<(() => void) | null>(null);
 
   // Get model config from ConfigContext
-  const { modelConfig, setModelConfig } = useConfig();
+  const { modelConfig, setModelConfig, isModelConfigLoading } = useConfig();
 
   // Custom hooks
   const meetingData = useMeetingData({ meeting, summaryData, onMeetingUpdated });
@@ -143,7 +143,7 @@ export default function PageContent({
     meeting,
     transcripts: meetingData.transcripts,
     modelConfig: modelConfig,
-    isModelConfigLoading: false, // ConfigContext loads on mount
+    isModelConfigLoading,
     selectedTemplate: templates.selectedTemplate,
     onMeetingUpdated,
     updateMeetingTitle: meetingData.updateMeetingTitle,
@@ -192,7 +192,10 @@ export default function PageContent({
     return () => {
       cancelled = true;
     };
-  }, [shouldAutoGenerate, meeting.id]); // Re-run if meeting changes
+    // isModelConfigLoading is a dep so that if auto-generate is requested before
+    // the model config finishes loading (handleGenerateSummary bails while
+    // loading), it re-runs and generates once the real config is in.
+  }, [shouldAutoGenerate, meeting.id, isModelConfigLoading]); // Re-run if meeting/config changes
 
   return (
     <motion.div
@@ -273,7 +276,7 @@ export default function PageContent({
               availableTemplates={templates.availableTemplates}
               selectedTemplate={templates.selectedTemplate}
               onTemplateSelect={templates.handleTemplateSelection}
-              isModelConfigLoading={false}
+              isModelConfigLoading={isModelConfigLoading}
               onOpenModelSettings={handleRegisterModalOpen}
             />
           </TabsContent>
