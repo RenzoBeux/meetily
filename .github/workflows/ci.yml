@@ -61,6 +61,34 @@ jobs:
         run: cargo clippy --workspace --all-targets
         continue-on-error: true
 
+  mcp-smoke:
+    name: MCP server smoke test
+    runs-on: ubuntu-22.04
+    # Own job: forces a full build of the `murmur` binary (whisper/sherpa native
+    # deps) to drive the real MCP server over stdio end to end.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libasound2-dev libopenblas-dev libx11-dev libxtst-dev libxrandr-dev \
+            cmake clang libclang-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: MCP stdio smoke test
+        run: cargo test -p murmur --test mcp_smoke
+
   frontend-check:
     name: Frontend typecheck + lint + tests
     runs-on: ubuntu-22.04

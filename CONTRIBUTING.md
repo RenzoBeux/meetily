@@ -30,14 +30,20 @@ Thanks for your interest in contributing! This repository is a personal fork of 
 
 ### Continuous Integration
 
-Two GitHub Actions checks run automatically on every pull request into `main` (defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+Three GitHub Actions checks run automatically on every pull request into `main` (defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
 
 - **`Rust tests + clippy`** — `cargo test --workspace` (the enforced gate) plus an informational `cargo clippy` pass.
+- **`MCP server smoke test`** — builds the real `murmur` binary and drives the built-in MCP server over stdio end to end (`cargo test --test mcp_smoke`). Its own job because it forces the heavy native binary build.
 - **`Frontend typecheck + lint + tests`** — `tsc --noEmit` and `bun test` (the enforced gates) plus `pnpm run lint` (informational).
 
-Both should be green before a PR is merged.
+All three should be green before a PR is merged.
 
-**Maintainers:** enable branch protection on `main` and mark these two check **names** — `Rust tests + clippy` and `Frontend typecheck + lint + tests` — as required status checks, so a red build blocks merges. `cargo test` and `tsc --noEmit` are the enforced gates today; clippy and eslint currently run in `continue-on-error` mode (informational). Before promoting either to a hard gate, clear its existing warning backlog so the switch doesn't immediately break CI (see the notes in `ci.yml`).
+**Maintainers:** enable branch protection on `main` and mark these three check **names** — `Rust tests + clippy`, `MCP server smoke test`, and `Frontend typecheck + lint + tests` — as required status checks, so a red build blocks merges.
+
+`cargo test` (incl. the MCP smoke test) and `tsc --noEmit` are the enforced gates today; **clippy** and **eslint** run in `continue-on-error` mode (informational). Promoting either to a hard gate requires clearing its existing backlog first so the switch doesn't immediately break CI:
+
+- **clippy** currently reports ~155 warnings across the workspace (measured `cargo clippy -p murmur --lib`). Most are stylistic; a few may be behaviour-adjacent, so the backlog should be triaged (not blanket-`#[allow]`d) before flipping `-D warnings`.
+- **eslint** (`pnpm run lint`) — measure with a clean run, then gate if the backlog is small, else keep informational with this note.
 
 ### Commit Message Format
 
