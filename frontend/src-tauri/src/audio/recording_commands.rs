@@ -42,6 +42,18 @@ static IS_RECORDING: AtomicBool = AtomicBool::new(false);
 // Ensures a fatal-error-triggered finalize runs at most once per session (reset at start).
 static FATAL_STOP_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
+// Throttles the recording-error emit: a dead device reports recoverable errors
+// continuously, and flooding the frontend toast crashes the webview.
+static LAST_RECORDING_ERROR_EMIT_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 // Global recording manager and transcription task to keep them alive during recording
 static RECORDING_MANAGER: Mutex<Option<RecordingManager>> = Mutex::new(None);
 static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
@@ -74,7 +86,14 @@ fn make_error_callback<R: Runtime>(
     app: AppHandle<R>,
 ) -> impl Fn(&super::recording_state::AudioError) + Send + Sync + 'static {
     move |error: &super::recording_state::AudioError| {
-        let _ = app.emit("recording-error", error.user_message());
+        // Throttle the surfaced error to at most ~once/sec — a dead device reports
+        // recoverable errors continuously and flooding the frontend toast crashes it.
+        let now = now_epoch_ms();
+        let last = LAST_RECORDING_ERROR_EMIT_MS.load(Ordering::Relaxed);
+        if now.saturating_sub(last) >= 1000 {
+            LAST_RECORDING_ERROR_EMIT_MS.store(now, Ordering::Relaxed);
+            let _ = app.emit("recording-error", error.user_message());
+        }
 
         // Only the first fatal error finalizes; guard against re-entry and don't fight a
         // concurrent user Stop (stop_recording no-ops if IS_RECORDING is already false).
@@ -121,6 +140,7 @@ fn spawn_recording_supervisor<R: Runtime>(app: AppHandle<R>) {
         let mut tick: u32 = 0;
         let mut last_signal = Instant::now();
         let mut silence_warned = false;
+        let mut last_device_sig: Option<String> = None;
 
         loop {
             if !IS_RECORDING.load(Ordering::SeqCst) {
@@ -162,8 +182,15 @@ fn spawn_recording_supervisor<R: Runtime>(app: AppHandle<R>) {
                 serde_json::json!({ "mic_rms": mic_rms, "system_rms": sys_rms }),
             );
 
-            // Device disconnect/reconnect events.
+            // Device disconnect/reconnect events. Dedupe consecutive identical events —
+            // the monitor re-emits the same disconnect every cycle while the device is
+            // gone, which would otherwise re-fire the frontend banner on every poll.
             for ev in events {
+                let sig = format!("{:?}", ev);
+                if last_device_sig.as_deref() == Some(sig.as_str()) {
+                    continue;
+                }
+                last_device_sig = Some(sig);
                 let event_name = match &ev {
                     DeviceEventResponse::DeviceDisconnected { .. } => "device-disconnected",
                     DeviceEventResponse::DeviceReconnected { .. } => "device-reconnected",

@@ -59,6 +59,9 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [isValidatingModel, setIsValidatingModel] = useState(false);
   const [speechDetected, setSpeechDetected] = useState(false);
   const [deviceError, setDeviceError] = useState<{ title: string, message: string } | null>(null);
+  // A dead device makes the backend report recoverable errors continuously; throttle the
+  // toast so it can't flood sonner (which triggers "Maximum update depth exceeded").
+  const lastRecordingErrorToastRef = useRef(0);
 
   const currentTime = 0;
   const duration = 0;
@@ -426,6 +429,12 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             return;
           }
 
+          // Throttle: a dead device makes the backend report recoverable errors
+          // continuously; without this the repeated toast floods sonner and React bails
+          // with "Maximum update depth exceeded". Show at most once every 3s.
+          const now = Date.now();
+          if (now - lastRecordingErrorToastRef.current < 3000) return;
+          lastRecordingErrorToastRef.current = now;
           // Stable id so repeated errors replace rather than stack into a toast pile.
           toast.error('Recording problem', { id: 'recording-error', description: message });
         });
