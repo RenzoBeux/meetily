@@ -271,8 +271,19 @@ fn build_transcript_text(meeting: &crate::api::api::MeetingDetails) -> String {
         .join("\n");
 
     if joined.chars().count() > MAX_TRANSCRIPT_CHARS {
-        let truncated: String = joined.chars().take(MAX_TRANSCRIPT_CHARS).collect();
-        joined = format!("{}\n\n[transcript truncated for length]", truncated);
+        // Keep the meeting's opening AND its conclusion/action-items instead of only the
+        // first 30k chars (the old head-only cut hid the end of every long meeting, so
+        // "what did we decide at the end?" always failed). Char-boundary safe.
+        let chars: Vec<char> = joined.chars().collect();
+        let total = chars.len();
+        let head_len = (MAX_TRANSCRIPT_CHARS * 3) / 5; // 60% opening
+        let tail_len = MAX_TRANSCRIPT_CHARS - head_len; // 40% conclusion
+        let head: String = chars[..head_len].iter().collect();
+        let tail: String = chars[total - tail_len..].iter().collect();
+        let omitted = total - head_len - tail_len;
+        joined = format!(
+            "{head}\n\n[... {omitted} characters from the middle of the transcript omitted for length ...]\n\n{tail}"
+        );
     }
     joined
 }

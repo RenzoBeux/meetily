@@ -4,8 +4,9 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::Client;
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 // Compile regex once and reuse (significant performance improvement for repeated calls)
 static THINKING_TAG_REGEX: Lazy<Regex> = Lazy::new(|| {
@@ -453,7 +454,7 @@ pub async fn generate_meeting_summary(
                 info!("Processing chunk {}/{}", i + 1, num_chunks);
                 let user_prompt_chunk = build_chunk_summary_user_prompt(chunk, attendees);
 
-                match generate_summary(
+                match generate_summary_with_retry(
                     client,
                     provider,
                     model_name,
@@ -493,10 +494,22 @@ pub async fn generate_meeting_summary(
             }
 
             successful_chunk_count = chunk_summaries.len() as i64;
-            info!(
-                "Successfully processed {} out of {} chunks",
-                successful_chunk_count, num_chunks
-            );
+            if (successful_chunk_count as usize) < num_chunks {
+                // Chunks now retry (generate_summary_with_retry); if some still fail we
+                // no longer hard-fail the whole summary, but we must NOT report a clean
+                // success — flag the omitted coverage loudly.
+                warn!(
+                    "PARTIAL SUMMARY: only {}/{} transcript sections were summarized; {} section(s) dropped after retries and omitted",
+                    successful_chunk_count,
+                    num_chunks,
+                    num_chunks - successful_chunk_count as usize
+                );
+            } else {
+                info!(
+                    "Successfully processed {} out of {} chunks",
+                    successful_chunk_count, num_chunks
+                );
+            }
 
             // Combine chunk summaries if multiple chunks
             content_to_summarize = if chunk_summaries.len() > 1 {
@@ -508,7 +521,7 @@ pub async fn generate_meeting_summary(
                 let system_prompt_combine = "You are an expert at synthesizing meeting summaries.";
                 let user_prompt_combine =
                     build_combine_summary_user_prompt(&combined_text, attendees);
-                generate_summary(
+                generate_summary_with_retry(
                     client,
                     provider,
                     model_name,
@@ -560,7 +573,7 @@ pub async fn generate_meeting_summary(
             }
         }
 
-        let raw_markdown = generate_summary(
+        let raw_markdown = generate_summary_with_retry(
             client,
             provider,
             model_name,
@@ -605,7 +618,17 @@ pub async fn generate_meeting_summary(
             .await
             {
                 Ok(translated) => translated,
-                Err(e) => return Err(format!("Translation to {} failed: {}", name, e)),
+                Err(e) if e.contains("cancelled") => return Err(e),
+                Err(e) => {
+                    // Don't discard the already-generated English summary on a
+                    // translation failure — fall back to it (mirrors the
+                    // NormalizeEnglish soft-fail path) so the user still gets a summary.
+                    warn!(
+                        "Translation to {} failed ({}); saving the English summary instead",
+                        name, e
+                    );
+                    english_markdown.clone()
+                }
             }
         }
         FinalLanguageAction::NormalizeEnglish => {
@@ -642,6 +665,61 @@ pub async fn generate_meeting_summary(
     Ok((final_markdown, english_markdown, successful_chunk_count))
 }
 
+/// Wraps `generate_summary` with a small bounded retry so a transient provider error on
+/// one chunk doesn't silently drop ~20 min of the meeting. Cancellation short-circuits.
+#[allow(clippy::too_many_arguments)]
+async fn generate_summary_with_retry(
+    client: &Client,
+    provider: &LLMProvider,
+    model_name: &str,
+    api_key: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    ollama_endpoint: Option<&str>,
+    custom_openai_endpoint: Option<&str>,
+    lmstudio_endpoint: Option<&str>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    app_data_dir: Option<&PathBuf>,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<String, String> {
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match generate_summary(
+            client,
+            provider,
+            model_name,
+            api_key,
+            system_prompt,
+            user_prompt,
+            ollama_endpoint,
+            custom_openai_endpoint,
+            lmstudio_endpoint,
+            max_tokens,
+            temperature,
+            top_p,
+            app_data_dir,
+            cancellation_token,
+        )
+        .await
+        {
+            Ok(s) => return Ok(s),
+            Err(e) if e.contains("cancelled") => return Err(e),
+            Err(e) if attempt >= MAX_ATTEMPTS => return Err(e),
+            Err(e) => {
+                warn!(
+                    "LLM request failed (attempt {}/{}): {}; retrying",
+                    attempt, MAX_ATTEMPTS, e
+                );
+                tokio::time::sleep(Duration::from_millis(500 * 2u64.pow(attempt - 1))).await;
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_markdown_transform(
     client: &Client,
@@ -666,7 +744,7 @@ async fn run_markdown_transform(
         }
     }
 
-    let raw = generate_summary(
+    let raw = generate_summary_with_retry(
         client,
         provider,
         model_name,

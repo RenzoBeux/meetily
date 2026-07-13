@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { motion } from 'framer-motion';
@@ -239,22 +239,34 @@ const Sidebar: React.FC = () => {
     }
   };
 
+  // Debounce timer for the transcript search (avoids a backend query per keystroke).
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+  }, []);
+
   // Handle search input changes
-  const handleSearchChange = useCallback(async (value: string) => {
-    setSearchQuery(value);
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchQuery(value); // keep the controlled input responsive
 
-    // If search query is empty, just return to normal view
-    if (!value.trim()) return;
-
-    // Search through transcripts
-    await searchTranscripts(value);
-
-    // Make sure the meetings folder is expanded when searching
+    // Make sure the meetings folder is expanded when searching (do it immediately)
     if (!expandedFolders.has('meetings')) {
       const newExpanded = new Set(expandedFolders);
       newExpanded.add('meetings');
       setExpandedFolders(newExpanded);
     }
+
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+
+    // Empty query: reset immediately (also cancels any inflight search via the seq guard).
+    if (!value.trim()) {
+      void searchTranscripts('');
+      return;
+    }
+
+    searchDebounceRef.current = setTimeout(() => {
+      void searchTranscripts(value);
+    }, 250);
   }, [expandedFolders, searchTranscripts]);
 
   // Combine search results with sidebar items

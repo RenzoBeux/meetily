@@ -114,6 +114,12 @@ impl ModelMetadataCache {
     }
 }
 
+/// Process-wide shared metadata cache (5 min TTL). Both the summary service (for
+/// chunk sizing) and the LLM client (for the Ollama `num_ctx` request option) read it,
+/// so a model's context size is fetched from `/api/show` at most once per TTL.
+pub static METADATA_CACHE: Lazy<ModelMetadataCache> =
+    Lazy::new(|| ModelMetadataCache::new(Duration::from_secs(300)));
+
 /// Default context sizes for common model families (fallback when API fails)
 const DEFAULT_CONTEXT_SIZES: &[(&str, usize)] = &[
     ("llama", 4096),

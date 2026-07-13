@@ -56,11 +56,50 @@ pub struct ClaudeRequest {
 #[derive(Deserialize, Debug)]
 pub struct ClaudeChatResponse {
     pub content: Vec<ClaudeChatContent>,
+    // "max_tokens" here means the output was cut at the token cap (truncated).
+    #[serde(default)]
+    pub stop_reason: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct ClaudeChatContent {
     pub text: String,
+}
+
+// Native Ollama /api/chat request (NOT the OpenAI-compat shim). The shim ignores
+// context sizing, so Ollama serves its small default (~4k) and silently truncates long
+// prompts; the native endpoint lets us set options.num_ctx to the model's real context.
+#[derive(Debug, Serialize)]
+struct OllamaChatRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+    stream: bool,
+    options: OllamaOptions,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_ctx: Option<u32>,
+    // Ollama defaults num_predict to 128 output tokens; -1 = generate until context is
+    // filled, so long summaries are not output-capped.
+    num_predict: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+}
+
+#[derive(Deserialize, Debug)]
+struct OllamaChatResponse {
+    message: OllamaChatResponseMessage,
+    #[serde(default)]
+    done_reason: Option<String>,
+    #[serde(default)]
+    prompt_eval_count: Option<u32>,
+}
+
+#[derive(Deserialize, Debug)]
+struct OllamaChatResponseMessage {
+    content: String,
 }
 
 /// LLM Provider enumeration for multi-provider support
@@ -150,6 +189,22 @@ pub async fn generate_summary(
         )
         .await
         .map_err(|e| e.to_string());
+    }
+
+    // Ollama uses its OWN native /api/chat path so we can send options.num_ctx (the
+    // OpenAI-compat shim below cannot, which is why long meetings were silently
+    // truncated to Ollama's ~4k default).
+    if provider == &LLMProvider::Ollama {
+        return generate_ollama_native(
+            client,
+            model_name,
+            system_prompt,
+            user_prompt,
+            ollama_endpoint,
+            temperature,
+            cancellation_token,
+        )
+        .await;
     }
 
     let (api_url, mut headers) = match provider {
@@ -265,7 +320,9 @@ pub async fn generate_summary(
         serde_json::json!(ClaudeRequest {
             system: system_prompt.to_string(),
             model: model_name.to_string(),
-            max_tokens: 2048,
+            // Was hardcoded to 2048, which cut long summaries and the translation pass
+            // mid-output. Default to 8192; a user-provided max_tokens overrides.
+            max_tokens: max_tokens.unwrap_or(8192),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: user_prompt.to_string(),
@@ -326,6 +383,12 @@ pub async fn generate_summary(
 
         info!("🐞 LLM Response received from Claude");
 
+        if chat_response.stop_reason.as_deref() == Some("max_tokens") {
+            tracing::warn!(
+                "Claude response stopped at max_tokens — summary may be truncated (raise max_tokens)"
+            );
+        }
+
         let content = chat_response
             .content
             .get(0)
@@ -352,6 +415,119 @@ pub async fn generate_summary(
     }
 }
 
+/// Generate a summary via Ollama's native `/api/chat` endpoint with `options.num_ctx`
+/// set to the model's real trained context, so long prompts are not silently truncated
+/// to Ollama's ~4k default (the OpenAI-compat shim cannot set num_ctx).
+async fn generate_ollama_native(
+    client: &Client,
+    model_name: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    ollama_endpoint: Option<&str>,
+    temperature: Option<f32>,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<String, String> {
+    let host = ollama_endpoint
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let url = format!("{}/api/chat", host.trim_end_matches('/'));
+
+    // Set num_ctx to the model's real context (the same value the summary chunker sizes
+    // chunks against, so a chunk always fits). NOTE: on a very-large-context model this
+    // asks Ollama to allocate a large KV cache and could OOM on limited hardware — the
+    // same assumption the chunker already makes.
+    let num_ctx = crate::ollama::metadata::METADATA_CACHE
+        .get_or_fetch(model_name, ollama_endpoint)
+        .await
+        .map(|m| m.context_size as u32)
+        .ok();
+
+    let request_body = OllamaChatRequest {
+        model: model_name.to_string(),
+        messages: vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: system_prompt.to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: user_prompt.to_string(),
+            },
+        ],
+        stream: false,
+        options: OllamaOptions {
+            num_ctx,
+            num_predict: -1,
+            temperature,
+        },
+    };
+
+    info!(
+        "🐞 LLM Request to Ollama (native /api/chat): model={}, num_ctx={:?}",
+        model_name, num_ctx
+    );
+
+    let request_future = client
+        .post(&url)
+        .json(&request_body)
+        .timeout(REQUEST_TIMEOUT_DURATION)
+        .send();
+
+    let response = if let Some(token) = cancellation_token {
+        tokio::select! {
+            result = request_future => {
+                result.map_err(|e| {
+                    if e.is_timeout() {
+                        "Ollama request timed out".to_string()
+                    } else {
+                        format!("Failed to send request to Ollama: {}", e)
+                    }
+                })?
+            }
+            _ = token.cancelled() => {
+                return Err("Summary generation was cancelled".to_string());
+            }
+        }
+    } else {
+        request_future.await.map_err(|e| {
+            if e.is_timeout() {
+                "Ollama request timed out".to_string()
+            } else {
+                format!("Failed to send request to Ollama: {}", e)
+            }
+        })?
+    };
+
+    if !response.status().is_success() {
+        let error_body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(format!("Ollama API request failed: {}", error_body));
+    }
+
+    let chat_response = response
+        .json::<OllamaChatResponse>()
+        .await
+        .map_err(|e| format!("Failed to parse Ollama response: {}", e))?;
+
+    // Truncation detection: if the served context was smaller than the prompt tokens.
+    if let (Some(ctx), Some(eval)) = (num_ctx, chat_response.prompt_eval_count) {
+        if eval >= ctx {
+            tracing::warn!(
+                "Ollama prompt_eval_count {} >= num_ctx {} — prompt may have been truncated",
+                eval,
+                ctx
+            );
+        }
+    }
+    if chat_response.done_reason.as_deref() == Some("length") {
+        tracing::warn!("Ollama response stopped at 'length' — output may be truncated");
+    }
+
+    Ok(chat_response.message.content.trim().to_string())
+}
+
 /// Helper function to get provider name for logging
 fn provider_name(provider: &LLMProvider) -> &str {
     match provider {
@@ -363,5 +539,63 @@ fn provider_name(provider: &LLMProvider) -> &str {
         LLMProvider::OpenRouter => "OpenRouter",
         LLMProvider::CustomOpenAI => "Custom OpenAI",
         LLMProvider::LMStudio => "LM Studio",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ollama_request_serializes_num_ctx_and_num_predict() {
+        let req = OllamaChatRequest {
+            model: "llama3.2".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+            }],
+            stream: false,
+            options: OllamaOptions {
+                num_ctx: Some(32768),
+                num_predict: -1,
+                temperature: Some(0.3),
+            },
+        };
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["options"]["num_ctx"], 32768);
+        assert_eq!(v["options"]["num_predict"], -1);
+        assert_eq!(v["stream"], false);
+    }
+
+    #[test]
+    fn ollama_response_parses_done_reason_and_eval_count() {
+        let json = r#"{"message":{"content":"hello"},"done_reason":"length","prompt_eval_count":5000}"#;
+        let resp: OllamaChatResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.message.content, "hello");
+        assert_eq!(resp.done_reason.as_deref(), Some("length"));
+        assert_eq!(resp.prompt_eval_count, Some(5000));
+    }
+
+    #[test]
+    fn ollama_response_tolerates_missing_optional_fields() {
+        let resp: OllamaChatResponse =
+            serde_json::from_str(r#"{"message":{"content":"hi"}}"#).unwrap();
+        assert_eq!(resp.done_reason, None);
+        assert_eq!(resp.prompt_eval_count, None);
+    }
+
+    #[test]
+    fn claude_response_parses_stop_reason() {
+        let json = r#"{"content":[{"text":"summary"}],"stop_reason":"max_tokens"}"#;
+        let resp: ClaudeChatResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.stop_reason.as_deref(), Some("max_tokens"));
+        assert_eq!(resp.content[0].text, "summary");
+    }
+
+    #[test]
+    fn claude_response_tolerates_missing_stop_reason() {
+        let resp: ClaudeChatResponse =
+            serde_json::from_str(r#"{"content":[{"text":"x"}]}"#).unwrap();
+        assert_eq!(resp.stop_reason, None);
     }
 }

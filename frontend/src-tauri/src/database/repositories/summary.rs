@@ -118,6 +118,37 @@ impl SummaryProcessesRepository {
         Ok(())
     }
 
+    /// Reconcile summary processes interrupted by an app quit that were left stuck in a
+    /// non-terminal state (e.g. PENDING) forever. Mark them failed and restore the prior
+    /// good summary from `result_backup` so the UI shows the last summary instead of an
+    /// eternal "Generating…" spinner. Called once at startup (single-instance app, so
+    /// nothing is legitimately running when this runs). Best-effort.
+    pub async fn reset_orphaned_processes(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+        let now = Utc::now();
+        let result = sqlx::query(
+            r#"
+            UPDATE summary_processes
+            SET status = 'failed',
+                error = 'Interrupted by app restart',
+                updated_at = ?,
+                end_time = ?,
+                result = COALESCE(result_backup, result),
+                result_backup = NULL,
+                result_backup_timestamp = NULL
+            WHERE status NOT IN ('completed', 'failed', 'cancelled')
+            "#,
+        )
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await?;
+        let n = result.rows_affected();
+        if n > 0 {
+            log_info!("Reset {} orphaned summary process(es) at startup", n);
+        }
+        Ok(n)
+    }
+
     pub async fn update_process_completed(
         pool: &SqlitePool,
         meeting_id: &str,
@@ -217,5 +248,71 @@ impl SummaryProcessesRepository {
             meeting_id
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::test_support::migrated_pool;
+
+    async fn insert_meeting(pool: &SqlitePool, id: &str) {
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, 'T', datetime('now'), datetime('now'))",
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reset_orphaned_processes_fails_stuck_and_restores_backup() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1").await;
+        // A process stranded PENDING with a prior good summary in result_backup.
+        sqlx::query(
+            "INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result_backup) VALUES ('m1','PENDING',datetime('now'),datetime('now'),'PRIOR')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let n = SummaryProcessesRepository::reset_orphaned_processes(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+
+        let (status, result): (String, Option<String>) = sqlx::query_as(
+            "SELECT status, result FROM summary_processes WHERE meeting_id = 'm1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(status, "failed");
+        assert_eq!(result.as_deref(), Some("PRIOR"), "prior summary restored from backup");
+    }
+
+    #[tokio::test]
+    async fn reset_orphaned_processes_leaves_terminal_rows() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m2").await;
+        sqlx::query(
+            "INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES ('m2','completed',datetime('now'),datetime('now'),'DONE')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let n = SummaryProcessesRepository::reset_orphaned_processes(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "completed rows are not touched");
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM summary_processes WHERE meeting_id = 'm2'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "completed");
     }
 }

@@ -157,24 +157,35 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     // The actual recording start/stop is handled in the Home component
   };
 
+  // Monotonic guard so a slow earlier search response can't clobber a newer one.
+  // invoke() isn't abortable, so we discard stale results rather than cancelling them.
+  const searchSeqRef = React.useRef(0);
+
   // Function to search through meeting transcripts
   const searchTranscripts = async (query: string) => {
+    // Bump for every call (including the empty-query reset) so any inflight response
+    // for a prior query is discarded.
+    const seq = ++searchSeqRef.current;
+
     if (!query.trim()) {
       setSearchResults([]);
+      setIsSearching(false);
       return;
     }
 
     try {
       setIsSearching(true);
 
-
       const results = await invoke('api_search_transcripts', { query }) as TranscriptSearchResult[];
+      if (seq !== searchSeqRef.current) return; // superseded by a newer search
       setSearchResults(results);
     } catch (error) {
+      if (seq !== searchSeqRef.current) return;
       console.error('Error searching transcripts:', error);
       setSearchResults([]);
     } finally {
-      setIsSearching(false);
+      // Only clear the spinner if this is still the latest request.
+      if (seq === searchSeqRef.current) setIsSearching(false);
     }
   };
 
@@ -192,14 +203,19 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     console.log(`📊 Starting polling for meeting ${meetingId}, process ${processId}`);
 
     let pollCount = 0;
-    const MAX_POLLS = 200; // ~16.5 minutes at 5-second intervals (slightly longer than backend's 15-min timeout to avoid race conditions)
+    // ~60 minutes at 5s intervals. The old 16.5-min cap fired an error while a long
+    // local model run was legitimately still going, inviting a duplicate regeneration
+    // that corrupts the cancellation registry. A process genuinely orphaned by a quit is
+    // reset to 'failed' by the startup sweep (reset_orphaned_processes) and caught by the
+    // terminal-status stop below, so this cap only bounds truly pathological runs.
+    const MAX_POLLS = 720;
 
     const pollInterval = setInterval(async () => {
       pollCount++;
 
-      // Timeout safety: Stop after 10 minutes
+      // Absolute safety cap.
       if (pollCount >= MAX_POLLS) {
-        console.warn(`⏱️ Polling timeout for ${meetingId} after ${MAX_POLLS} iterations`);
+        console.warn(`⏱️ Polling cap reached for ${meetingId} after ${MAX_POLLS} iterations`);
         clearInterval(pollInterval);
         setActiveSummaryPolls(prev => {
           const next = new Map(prev);
@@ -208,7 +224,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
         });
         onUpdate({
           status: 'error',
-          error: 'Summary generation timed out after 15 minutes. Please try again or check your model configuration.'
+          error: 'Summary is taking unusually long (over an hour). It may still finish in the background — reopen the meeting to check, or try again.'
         });
         return;
       }

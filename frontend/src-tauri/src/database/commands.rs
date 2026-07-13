@@ -163,6 +163,11 @@ pub async fn import_and_initialize_database(
     // If WAL-corruption recovery ran during open, notify the user.
     super::setup::emit_recovery_notice(&app, &db_manager);
 
+    // Reconcile summary processes stranded in a non-terminal state by a prior quit.
+    if let Err(e) = super::repositories::summary::SummaryProcessesRepository::reset_orphaned_processes(db_manager.pool()).await {
+        error!("Failed to reset orphaned summary processes: {}", e);
+    }
+
     // Update app state with the new manager
     app.manage(AppState { db_manager });
 
@@ -189,6 +194,11 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
 
     // If WAL-corruption recovery ran during open, notify the user.
     super::setup::emit_recovery_notice(&app, &db_manager);
+
+    // Reconcile summary processes stranded in a non-terminal state by a prior quit.
+    if let Err(e) = super::repositories::summary::SummaryProcessesRepository::reset_orphaned_processes(db_manager.pool()).await {
+        error!("Failed to reset orphaned summary processes: {}", e);
+    }
 
     // Update app state with the new manager
     app.manage(AppState { db_manager: db_manager.clone() });

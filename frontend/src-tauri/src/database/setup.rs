@@ -57,6 +57,12 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
                 .await;
         }
 
+        // Reconcile summary processes stranded in a non-terminal state by a prior quit,
+        // so a meeting doesn't show an eternal "Generating…" spinner.
+        if let Err(e) = crate::database::repositories::summary::SummaryProcessesRepository::reset_orphaned_processes(db_manager.pool()).await {
+            log::warn!("Failed to reset orphaned summary processes: {}", e);
+        }
+
         app.manage(AppState { db_manager });
         info!("Database initialized successfully");
     }
