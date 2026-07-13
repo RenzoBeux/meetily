@@ -28,6 +28,17 @@ Thanks for your interest in contributing! This repository is a personal fork of 
 - The app builds and the affected flow works — for audio/transcription changes, do a real recording smoke test.
 - Follow the existing conventions (see [CLAUDE.md](CLAUDE.md)): `anyhow::Result` in Rust, no index/barrel files in TypeScript, audio devices are named "microphone"/"system".
 
+### Continuous Integration
+
+Two GitHub Actions checks run automatically on every pull request into `main` (defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+
+- **`Rust tests + clippy`** — `cargo test --workspace` (the enforced gate) plus an informational `cargo clippy` pass.
+- **`Frontend typecheck + lint + tests`** — `tsc --noEmit` and `bun test` (the enforced gates) plus `pnpm run lint` (informational).
+
+Both should be green before a PR is merged.
+
+**Maintainers:** enable branch protection on `main` and mark these two check **names** — `Rust tests + clippy` and `Frontend typecheck + lint + tests` — as required status checks, so a red build blocks merges. `cargo test` and `tsc --noEmit` are the enforced gates today; clippy and eslint currently run in `continue-on-error` mode (informational). Before promoting either to a hard gate, clear its existing warning backlog so the switch doesn't immediately break CI (see the notes in `ci.yml`).
+
 ### Commit Message Format
 
 ```

@@ -38,4 +38,54 @@ mod tests {
             .unwrap();
         assert_eq!(n, 0);
     }
+
+    #[tokio::test]
+    async fn every_migration_is_recorded_and_key_columns_exist() {
+        let pool = migrated_pool().await;
+
+        // The number of applied migrations matches the embedded migration set,
+        // so a half-applied schema (or a migration that failed silently) fails
+        // loudly. Comparing to the embedded count means this test auto-updates
+        // when a migration is added.
+        let migrator = sqlx::migrate!("./migrations");
+        let expected = migrator.iter().count() as i64;
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(applied, expected, "every embedded migration should be applied");
+
+        // Spot-check columns/tables from later migrations so a dropped migration
+        // is caught by a concrete schema assertion, not just the count.
+        for (table, column) in [
+            ("meetings", "folder_path"),
+            ("meetings", "attendees"),
+            ("transcripts", "speaker"),
+            ("transcripts", "audio_start_time"),
+            ("summary_processes", "result_backup"),
+        ] {
+            assert!(
+                column_exists(&pool, table, column).await,
+                "expected column {table}.{column} to exist"
+            );
+        }
+
+        for table in ["meeting_notes", "chat_messages"] {
+            let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap_or(-1);
+            assert_eq!(n, 0, "expected table {table} to exist and be empty");
+        }
+    }
+
+    async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> bool {
+        // Table names here are hardcoded literals, so the format! is injection-safe.
+        let names: Vec<String> =
+            sqlx::query_scalar(&format!("SELECT name FROM pragma_table_info('{table}')"))
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        names.iter().any(|n| n == column)
+    }
 }

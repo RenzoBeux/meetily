@@ -737,3 +737,42 @@ pub fn write_transcript_json_to_file(
 
     Ok(file_path.to_string_lossy().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_v2_leaves_silence_untouched() {
+        let silence = vec![0.0f32; 128];
+        assert_eq!(normalize_v2(&silence), silence);
+    }
+
+    #[test]
+    fn normalize_v2_scales_quiet_audio_up_and_never_clips() {
+        let quiet: Vec<f32> = (0..128).map(|i| 0.01 * (i as f32 * 0.1).sin()).collect();
+        let out = normalize_v2(&quiet);
+        assert_eq!(out.len(), quiet.len());
+        assert!(out.iter().all(|s| s.is_finite()), "no NaN/inf");
+        assert!(
+            out.iter().all(|&s| s.abs() <= 0.95 + 1e-6),
+            "soft-clip keeps |sample| <= 0.95"
+        );
+        let peak_in = quiet.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+        let peak_out = out.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+        assert!(peak_out > peak_in, "quiet audio is scaled up");
+    }
+
+    #[test]
+    fn audio_to_mono_averages_stereo_frames() {
+        // Interleaved stereo L,R,L,R -> per-frame average.
+        let stereo = vec![1.0, 0.0, 0.5, 0.5];
+        assert_eq!(audio_to_mono(&stereo, 2), vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn audio_to_mono_passes_through_mono() {
+        let mono_in = vec![0.1, 0.2, 0.3];
+        assert_eq!(audio_to_mono(&mono_in, 1), mono_in);
+    }
+}

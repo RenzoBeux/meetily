@@ -124,40 +124,10 @@ impl DatabaseManager {
                     // Deleting it destroyed that data with no undo. Instead we snapshot the
                     // main DB and rename the wal/shm aside so recovery is still possible,
                     // and capture what we did into a RecoveryNotice so the UI can tell the user.
-                    let ts = Utc::now().format("%Y%m%d-%H%M%S");
+                    let ts = Utc::now().format("%Y%m%d-%H%M%S").to_string();
                     let main_path = Path::new(&tauri_db_path);
-                    let mut backup_path: Option<String> = None;
-                    let mut quarantined: Vec<String> = Vec::new();
-                    if main_path.exists() {
-                        let backup = format!("{}.corrupt-{}.bak", tauri_db_path, ts);
-                        match fs::copy(main_path, &backup) {
-                            Ok(_) => {
-                                log::warn!("Backed up main DB before recovery: {}", backup);
-                                backup_path = Some(backup);
-                            }
-                            Err(e) => log::warn!("Failed to back up main DB before recovery: {}", e),
-                        }
-                    }
-                    if wal_path.exists() {
-                        let dest = wal_path.with_extension(format!("sqlite-wal.corrupt-{}.bak", ts));
-                        match fs::rename(&wal_path, &dest) {
-                            Ok(_) => {
-                                log::warn!("Quarantined WAL file to: {:?}", dest);
-                                quarantined.push(dest.to_string_lossy().to_string());
-                            }
-                            Err(e) => log::warn!("Failed to quarantine WAL file: {}", e),
-                        }
-                    }
-                    if shm_path.exists() {
-                        let dest = shm_path.with_extension(format!("sqlite-shm.corrupt-{}.bak", ts));
-                        match fs::rename(&shm_path, &dest) {
-                            Ok(_) => {
-                                log::warn!("Quarantined SHM file to: {:?}", dest);
-                                quarantined.push(dest.to_string_lossy().to_string());
-                            }
-                            Err(e) => log::warn!("Failed to quarantine SHM file: {}", e),
-                        }
-                    }
+                    let (backup_path, quarantined) =
+                        Self::quarantine_wal_and_backup_main(main_path, &wal_path, &shm_path, &ts);
 
                     // Retry connection after quarantining WAL files
                     log::info!("Retrying database connection after WAL quarantine...");
@@ -186,6 +156,51 @@ impl DatabaseManager {
                 }
             }
         }
+    }
+
+    /// Quarantine (never delete) a corrupt DB's WAL/SHM sidecars and back up the
+    /// main file, so a crash that corrupted the `-wal` can still be recovered.
+    /// Returns `(backup_path, quarantined_paths)`. Extracted so it is testable
+    /// without a Tauri `AppHandle`.
+    fn quarantine_wal_and_backup_main(
+        main_path: &Path,
+        wal_path: &Path,
+        shm_path: &Path,
+        ts: &str,
+    ) -> (Option<String>, Vec<String>) {
+        let mut backup_path: Option<String> = None;
+        let mut quarantined: Vec<String> = Vec::new();
+        if main_path.exists() {
+            let backup = format!("{}.corrupt-{}.bak", main_path.display(), ts);
+            match fs::copy(main_path, &backup) {
+                Ok(_) => {
+                    log::warn!("Backed up main DB before recovery: {}", backup);
+                    backup_path = Some(backup);
+                }
+                Err(e) => log::warn!("Failed to back up main DB before recovery: {}", e),
+            }
+        }
+        if wal_path.exists() {
+            let dest = wal_path.with_extension(format!("sqlite-wal.corrupt-{}.bak", ts));
+            match fs::rename(wal_path, &dest) {
+                Ok(_) => {
+                    log::warn!("Quarantined WAL file to: {:?}", dest);
+                    quarantined.push(dest.to_string_lossy().to_string());
+                }
+                Err(e) => log::warn!("Failed to quarantine WAL file: {}", e),
+            }
+        }
+        if shm_path.exists() {
+            let dest = shm_path.with_extension(format!("sqlite-shm.corrupt-{}.bak", ts));
+            match fs::rename(shm_path, &dest) {
+                Ok(_) => {
+                    log::warn!("Quarantined SHM file to: {:?}", dest);
+                    quarantined.push(dest.to_string_lossy().to_string());
+                }
+                Err(e) => log::warn!("Failed to quarantine SHM file: {}", e),
+            }
+        }
+        (backup_path, quarantined)
     }
 
     /// Check if this is the first launch (sqlite database doesn't exist yet)
@@ -523,6 +538,40 @@ mod tests {
 
         dst_pool.close().await;
         pool.close().await;
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quarantine_backs_up_main_and_renames_sidecars_without_deleting() {
+        let dir = std::env::temp_dir().join("murmur_wal_quarantine_test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let main = dir.join("meeting_minutes.sqlite");
+        let wal = dir.join("meeting_minutes.sqlite-wal");
+        let shm = dir.join("meeting_minutes.sqlite-shm");
+        fs::write(&main, b"MAINDATA").unwrap();
+        fs::write(&wal, b"WALDATA").unwrap();
+        fs::write(&shm, b"SHMDATA").unwrap();
+
+        let (backup, quarantined) =
+            DatabaseManager::quarantine_wal_and_backup_main(&main, &wal, &shm, "TS");
+
+        // Main DB preserved (backed up, not moved) and byte-identical.
+        assert!(main.exists(), "main DB must not be deleted");
+        assert_eq!(fs::read(&main).unwrap(), b"MAINDATA");
+        let backup = backup.expect("a backup path is returned");
+        assert!(Path::new(&backup).exists(), "backup copy exists");
+        assert_eq!(fs::read(&backup).unwrap(), b"MAINDATA", "backup is byte-identical");
+
+        // WAL/SHM RENAMED aside (quarantined), never deleted.
+        assert!(!wal.exists(), "wal is renamed away");
+        assert!(!shm.exists(), "shm is renamed away");
+        assert_eq!(quarantined.len(), 2);
+        for q in &quarantined {
+            assert!(Path::new(q).exists(), "quarantined sidecar exists: {q}");
+        }
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -1066,3 +1066,42 @@ impl Default for AudioPipelineManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ring_buffer_extracts_full_window_zero_padding_absent_system_audio() {
+        let mut rb = AudioMixerRingBuffer::new(1000); // 600-sample window
+        assert!(!rb.can_mix());
+
+        rb.add_samples(DeviceType::Microphone, vec![0.5; 600]);
+        assert!(rb.can_mix(), "one full channel is enough to mix");
+
+        let (mic, sys) = rb.extract_window().expect("a window should be ready");
+        assert_eq!(mic.len(), 600);
+        assert_eq!(sys.len(), 600, "the short side is zero-padded to the window length");
+        assert!(mic.iter().all(|&s| s == 0.5));
+        assert!(sys.iter().all(|&s| s == 0.0), "absent system audio reads as silence");
+        assert!(!rb.can_mix(), "the window was consumed");
+    }
+
+    #[test]
+    fn ring_buffer_returns_none_until_a_window_is_available() {
+        let mut rb = AudioMixerRingBuffer::new(1000);
+        rb.add_samples(DeviceType::Microphone, vec![0.1; 100]); // < 600
+        assert!(rb.extract_window().is_none());
+    }
+
+    #[test]
+    fn ring_buffer_drops_oldest_beyond_capacity() {
+        let mut rb = AudioMixerRingBuffer::new(1000); // window 600, max 4800
+        rb.add_samples(DeviceType::Microphone, vec![1.0; 6000]);
+        assert!(
+            rb.mic_buffer.len() <= rb.max_buffer_size,
+            "buffer must be capped at max_buffer_size, got {}",
+            rb.mic_buffer.len()
+        );
+    }
+}

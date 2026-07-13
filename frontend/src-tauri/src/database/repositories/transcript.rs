@@ -449,7 +449,143 @@ impl TranscriptsRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::test_support::migrated_pool;
     use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn insert_meeting(pool: &SqlitePool, id: &str) {
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, 'T', datetime('now'), datetime('now'))",
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn seg(id: &str, text: &str, start: f64, end: f64) -> NewSegmentRow {
+        NewSegmentRow {
+            id: id.to_string(),
+            meeting_id: "m1".to_string(),
+            text: text.to_string(),
+            timestamp: "[00:00]".to_string(),
+            audio_start_time: Some(start),
+            audio_end_time: Some(end),
+            duration: Some(end - start),
+            speaker: None,
+        }
+    }
+
+    async fn count_segments(pool: &SqlitePool) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM transcripts")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn bulk_insert_is_idempotent_and_merge_is_atomic() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1").await;
+
+        let rows = vec![
+            seg("s1", "one", 0.0, 10.0),
+            seg("s2", "two", 10.0, 20.0),
+            seg("s3", "three", 20.0, 30.0),
+        ];
+        assert_eq!(
+            TranscriptsRepository::bulk_insert_segments(&pool, &rows)
+                .await
+                .unwrap(),
+            3
+        );
+
+        // INSERT OR IGNORE → re-inserting the same ids is a no-op (undo-safe).
+        assert_eq!(
+            TranscriptsRepository::bulk_insert_segments(&pool, &rows)
+                .await
+                .unwrap(),
+            0,
+            "duplicate ids must be ignored"
+        );
+        assert_eq!(count_segments(&pool).await, 3);
+
+        // Merge s2+s3 into s1 in one transaction.
+        TranscriptsRepository::merge_segments(
+            &pool,
+            "s1",
+            "one two three",
+            30.0,
+            30.0,
+            Some("mic"),
+            &["s2".to_string(), "s3".to_string()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(count_segments(&pool).await, 1, "merged segments are deleted");
+        let (text, end, speaker): (String, f64, Option<String>) = sqlx::query_as(
+            "SELECT transcript, audio_end_time, speaker FROM transcripts WHERE id = 's1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(text, "one two three");
+        assert_eq!(end, 30.0);
+        assert_eq!(speaker.as_deref(), Some("mic"));
+    }
+
+    #[tokio::test]
+    async fn split_segment_replaces_source_and_inserts_tail() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1").await;
+        TranscriptsRepository::bulk_insert_segments(&pool, &[seg("s1", "hello world", 0.0, 10.0)])
+            .await
+            .unwrap();
+
+        let tail = seg("s1b", "world", 5.0, 10.0);
+        TranscriptsRepository::split_segment(&pool, "s1", "hello", 5.0, 5.0, &tail)
+            .await
+            .unwrap();
+
+        assert_eq!(count_segments(&pool).await, 2);
+        let head: String = sqlx::query_scalar("SELECT transcript FROM transcripts WHERE id = 's1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(head, "hello");
+        let tail_text: String =
+            sqlx::query_scalar("SELECT transcript FROM transcripts WHERE id = 's1b'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(tail_text, "world");
+    }
+
+    #[tokio::test]
+    async fn update_segment_bounds_updates_existing_and_reports_missing() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1").await;
+        TranscriptsRepository::bulk_insert_segments(&pool, &[seg("s1", "orig", 0.0, 10.0)])
+            .await
+            .unwrap();
+
+        let updated = TranscriptsRepository::update_segment_bounds(&pool, "s1", "edited", 8.0, 8.0)
+            .await
+            .unwrap();
+        assert!(updated);
+        let (text, end): (String, f64) =
+            sqlx::query_as("SELECT transcript, audio_end_time FROM transcripts WHERE id = 's1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(text, "edited");
+        assert_eq!(end, 8.0);
+
+        let missing = TranscriptsRepository::update_segment_bounds(&pool, "nope", "x", 1.0, 1.0)
+            .await
+            .unwrap();
+        assert!(!missing, "updating a non-existent segment returns false");
+    }
 
     async fn test_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()

@@ -315,4 +315,52 @@ mod tests {
                 .unwrap();
         assert_eq!(status, "completed");
     }
+
+    async fn status_of(pool: &SqlitePool, id: &str) -> String {
+        sqlx::query_scalar("SELECT status FROM summary_processes WHERE meeting_id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn update_meeting_summary_guards_nonexistent_meeting() {
+        let pool = migrated_pool().await;
+        // No meeting row inserted.
+        let ok = SummaryProcessesRepository::update_meeting_summary(
+            &pool,
+            "ghost",
+            &serde_json::json!({ "summary": "x" }),
+        )
+        .await
+        .unwrap();
+        assert!(!ok, "summary update for a non-existent meeting returns Ok(false)");
+    }
+
+    #[tokio::test]
+    async fn status_transitions_completed_then_failed() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1").await;
+        SummaryProcessesRepository::create_or_reset_process(&pool, "m1")
+            .await
+            .unwrap();
+        assert_eq!(status_of(&pool, "m1").await, "PENDING");
+
+        SummaryProcessesRepository::update_process_completed(
+            &pool,
+            "m1",
+            serde_json::json!({ "summary": "done" }),
+            3,
+            1.5,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status_of(&pool, "m1").await, "completed");
+
+        SummaryProcessesRepository::update_process_failed(&pool, "m1", "boom")
+            .await
+            .unwrap();
+        assert_eq!(status_of(&pool, "m1").await, "failed");
+    }
 }

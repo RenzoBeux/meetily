@@ -76,3 +76,58 @@ impl ChatMessagesRepository {
         Ok(result.rows_affected())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::test_support::migrated_pool;
+
+    async fn insert_meeting(pool: &SqlitePool, id: &str) {
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, 'T', datetime('now'), datetime('now'))",
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn add_list_and_clear_messages() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1").await;
+
+        ChatMessagesRepository::add_message(&pool, "m1", "user", "hello")
+            .await
+            .unwrap();
+        ChatMessagesRepository::add_message(&pool, "m1", "assistant", "hi there")
+            .await
+            .unwrap();
+
+        let msgs = ChatMessagesRepository::list_for_meeting(&pool, "m1")
+            .await
+            .unwrap();
+        assert_eq!(msgs.len(), 2);
+        // Assert by set (two rapid inserts may share a created_at, making index
+        // order unreliable).
+        let contents: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
+        assert!(contents.contains(&"hello") && contents.contains(&"hi there"));
+
+        let cleared = ChatMessagesRepository::clear_for_meeting(&pool, "m1")
+            .await
+            .unwrap();
+        assert_eq!(cleared, 2);
+        assert!(ChatMessagesRepository::list_for_meeting(&pool, "m1")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_role_is_rejected() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1").await;
+        let result = ChatMessagesRepository::add_message(&pool, "m1", "system", "nope").await;
+        assert!(result.is_err(), "an invalid chat role must be rejected");
+    }
+}

@@ -304,8 +304,7 @@ pub async fn recover_audio_from_checkpoints(
             .path()
             .file_stem()
             .and_then(|s| s.to_str())
-            .and_then(|s| s.rsplit('_').next())
-            .and_then(|n| n.parse::<u64>().ok())
+            .map(checkpoint_index)
             .unwrap_or(0)
     });
 
@@ -440,11 +439,38 @@ pub async fn has_audio_checkpoints(meeting_folder: String) -> Result<bool, Strin
     Ok(has_mp4_files)
 }
 
+/// Parse the numeric chunk index from a checkpoint filename stem
+/// (`audio_chunk_<n>`). Sorting by this (not lexicographically) keeps ordering
+/// correct once the index passes the {:03} zero-pad width — "audio_chunk_1000"
+/// sorts before "audio_chunk_999" as strings, which would corrupt reassembly of
+/// recordings longer than ~8.3h.
+fn checkpoint_index(file_stem: &str) -> u64 {
+    file_stem
+        .rsplit('_')
+        .next()
+        .and_then(|n| n.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
     use super::super::recording_state::DeviceType;
+
+    #[test]
+    fn checkpoint_index_sorts_numerically_past_zero_pad_width() {
+        assert_eq!(checkpoint_index("audio_chunk_0"), 0);
+        assert_eq!(checkpoint_index("audio_chunk_007"), 7);
+        assert_eq!(checkpoint_index("audio_chunk_999"), 999);
+        assert_eq!(checkpoint_index("audio_chunk_1000"), 1000);
+        // The regression: 999 must sort before 1000 (a lexicographic sort of the
+        // filenames would reverse them).
+        assert!(
+            checkpoint_index("audio_chunk_999") < checkpoint_index("audio_chunk_1000")
+        );
+        assert_eq!(checkpoint_index("garbage"), 0, "unparseable stem → 0");
+    }
 
     #[tokio::test]
     async fn test_checkpoint_creation() {

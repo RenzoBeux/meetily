@@ -328,3 +328,103 @@ async fn delete_meeting_with_transaction(
 
     Ok(result.rows_affected() > 0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::test_support::migrated_pool;
+
+    async fn insert_meeting(pool: &SqlitePool, id: &str, title: &str) {
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))",
+        )
+        .bind(id)
+        .bind(title)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_meeting_cascades_to_children() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1", "Meeting").await;
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('t1','m1','hi','[00:00]')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at) VALUES ('m1','completed', datetime('now'), datetime('now'))")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO transcript_chunks (meeting_id, transcript_text, model, model_name, created_at) VALUES ('m1','txt','m','mn', datetime('now'))")
+            .execute(&pool).await.unwrap();
+
+        assert!(MeetingsRepository::delete_meeting(&pool, "m1").await.unwrap());
+
+        for q in [
+            "SELECT COUNT(*) FROM meetings WHERE id='m1'",
+            "SELECT COUNT(*) FROM transcripts WHERE meeting_id='m1'",
+            "SELECT COUNT(*) FROM summary_processes WHERE meeting_id='m1'",
+            "SELECT COUNT(*) FROM transcript_chunks WHERE meeting_id='m1'",
+        ] {
+            let n: i64 = sqlx::query_scalar(q).fetch_one(&pool).await.unwrap();
+            assert_eq!(n, 0, "rows should be gone after cascade delete: {q}");
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_missing_meeting_returns_false() {
+        let pool = migrated_pool().await;
+        assert!(!MeetingsRepository::delete_meeting(&pool, "nope").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn update_title_and_attendees_roundtrip() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1", "Old").await;
+
+        assert!(MeetingsRepository::update_meeting_title(&pool, "m1", "New Title")
+            .await
+            .unwrap());
+        let title: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id='m1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(title, "New Title");
+        assert!(!MeetingsRepository::update_meeting_title(&pool, "nope", "x")
+            .await
+            .unwrap());
+
+        assert!(
+            MeetingsRepository::update_meeting_attendees(&pool, "m1", Some("Alice, Bob"))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            MeetingsRepository::get_meeting_attendees(&pool, "m1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("Alice, Bob")
+        );
+        MeetingsRepository::update_meeting_attendees(&pool, "m1", Some("   "))
+            .await
+            .unwrap();
+        assert_eq!(
+            MeetingsRepository::get_meeting_attendees(&pool, "m1")
+                .await
+                .unwrap(),
+            None,
+            "whitespace-only attendees normalize to NULL"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_missing_meeting_is_row_not_found() {
+        let pool = migrated_pool().await;
+        let err = MeetingsRepository::get_meeting(&pool, "nope")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, sqlx::Error::RowNotFound),
+            "get_meeting on a missing id returns RowNotFound, got {err:?}"
+        );
+    }
+}
