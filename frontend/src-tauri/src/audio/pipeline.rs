@@ -18,8 +18,8 @@ use super::vad::{ContinuousVadProcessor};
 struct AudioMixerRingBuffer {
     mic_buffer: VecDeque<f32>,
     system_buffer: VecDeque<f32>,
-    window_size_samples: usize,  // Fixed mixing window (e.g., 50ms)
-    max_buffer_size: usize,  // Safety limit (e.g., 100ms)
+    window_size_samples: usize,  // Fixed mixing window (600ms)
+    max_buffer_size: usize,  // Safety limit (8× the window)
 }
 
 impl AudioMixerRingBuffer {
@@ -138,6 +138,22 @@ impl AudioMixerRingBuffer {
         };
 
         Some((mic_window, sys_window))
+    }
+
+    /// Drain whatever samples remain — a trailing partial window on stop — zero-
+    /// padding the shorter side to equal length, so the final sub-window (often
+    /// the last word) still reaches the VADs and the recording. Returns None once
+    /// the buffer is empty, so repeated flushes are idempotent.
+    fn drain_partial(&mut self) -> Option<(Vec<f32>, Vec<f32>)> {
+        if self.mic_buffer.is_empty() && self.system_buffer.is_empty() {
+            return None;
+        }
+        let mut mic: Vec<f32> = self.mic_buffer.drain(..).collect();
+        let mut sys: Vec<f32> = self.system_buffer.drain(..).collect();
+        let len = mic.len().max(sys.len());
+        mic.resize(len, 0.0);
+        sys.resize(len, 0.0);
+        Some((mic, sys))
     }
 
 }
@@ -884,6 +900,52 @@ impl AudioPipeline {
     fn flush_remaining_audio(&mut self) -> Result<()> {
         info!("Flushing remaining audio from pipeline (processed {} chunks)", self.processed_chunks);
 
+        // 3C.2: drain the trailing partial window (the final <600ms, often the last
+        // word) from the ring buffer and push it through the VADs + recording BEFORE
+        // flushing. Idempotent — drain_partial yields None once the buffer is empty.
+        if let Some((mic_partial, sys_partial)) = self.ring_buffer.drain_partial() {
+            let mic_vad_result = self.mic_vad_processor.process_audio(&mic_partial);
+            let sys_vad_result = self.sys_vad_processor.process_audio(&sys_partial);
+            for (vad_result, source_device) in [
+                (mic_vad_result, DeviceType::Microphone),
+                (sys_vad_result, DeviceType::System),
+            ] {
+                if let Ok(speech_segments) = vad_result {
+                    for segment in speech_segments {
+                        if segment.samples.len() >= 800 {
+                            let transcription_chunk = AudioChunk {
+                                data: segment.samples,
+                                sample_rate: 16000,
+                                timestamp: segment.start_timestamp_ms / 1000.0,
+                                chunk_id: self.chunk_id_counter,
+                                device_type: source_device.clone(),
+                            };
+                            if self.transcription_sender.send(transcription_chunk).is_ok() {
+                                self.chunk_id_counter += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            // Persist the partial to the recording as stereo (L = mic, R = system).
+            if let Some(ref sender) = self.recording_sender_for_mixed {
+                let frames = mic_partial.len().max(sys_partial.len());
+                let mut stereo = Vec::with_capacity(frames * 2);
+                for i in 0..frames {
+                    stereo.push(mic_partial.get(i).copied().unwrap_or(0.0));
+                    stereo.push(sys_partial.get(i).copied().unwrap_or(0.0));
+                }
+                let recording_chunk = AudioChunk {
+                    data: stereo,
+                    sample_rate: self.sample_rate,
+                    timestamp: 0.0,
+                    chunk_id: self.chunk_id_counter,
+                    device_type: DeviceType::Microphone,
+                };
+                let _ = sender.send(recording_chunk);
+            }
+        }
+
         // Flush both VAD processors so trailing speech from either stream is preserved
         for (flush_result, source_device) in [
             (self.mic_vad_processor.flush(), DeviceType::Microphone),
@@ -1103,5 +1165,33 @@ mod tests {
             "buffer must be capped at max_buffer_size, got {}",
             rb.mic_buffer.len()
         );
+    }
+
+    #[test]
+    fn drain_partial_yields_remaining_zero_padded_then_none() {
+        let mut rb = AudioMixerRingBuffer::new(1000); // 600-sample window
+        assert!(rb.drain_partial().is_none(), "an empty buffer drains to None");
+
+        // A sub-window of mic-only audio: too small to extract_window, but the
+        // stop-time drain must still recover it.
+        rb.add_samples(DeviceType::Microphone, vec![0.3; 200]);
+        assert!(rb.extract_window().is_none(), "a partial window is not a full window");
+
+        let (mic, sys) = rb.drain_partial().expect("partial drained");
+        assert_eq!(mic.len(), 200);
+        assert_eq!(sys.len(), 200, "the absent side is zero-padded to equal length");
+        assert!(mic.iter().all(|&s| s == 0.3));
+        assert!(sys.iter().all(|&s| s == 0.0));
+
+        assert!(rb.drain_partial().is_none(), "draining is idempotent");
+    }
+
+    #[test]
+    fn drain_partial_takes_only_the_remainder_after_full_windows() {
+        let mut rb = AudioMixerRingBuffer::new(1000); // window 600
+        rb.add_samples(DeviceType::Microphone, vec![1.0; 700]); // 1 full window + 100
+        let _ = rb.extract_window().expect("first full window");
+        let (mic, _sys) = rb.drain_partial().expect("100-sample remainder");
+        assert_eq!(mic.len(), 100, "only the post-window remainder is drained");
     }
 }
