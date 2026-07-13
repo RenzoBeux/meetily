@@ -763,6 +763,7 @@ pub fn run() {
             export::export_all_markdown,
             database::backup_commands::db_backup_now,
             database::backup_commands::db_list_backups,
+            database::backup_commands::db_restore_backup,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
