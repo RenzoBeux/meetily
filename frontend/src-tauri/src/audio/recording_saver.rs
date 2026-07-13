@@ -209,7 +209,11 @@ impl RecordingSaver {
                         // Add chunk to incremental saver
                         if let Some(saver_arc) = &incremental_saver_arc {
                             let mut saver_guard = saver_arc.lock().await;
-                            if let Err(e) = saver_guard.add_chunk(chunk) {
+                            // Offload the (possibly blocking) checkpoint ffmpeg encode
+                            // off the tokio worker thread; AudioChunk is Send.
+                            if let Err(e) =
+                                tokio::task::block_in_place(|| saver_guard.add_chunk(chunk))
+                            {
                                 error!("Failed to add chunk to incremental saver: {}", e);
                                 report_once();
                             }

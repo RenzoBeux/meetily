@@ -632,7 +632,10 @@ impl WhisperEngine {
             // let _suppressor = crate::whisper_engine::StderrSuppressor::new();
 
             let mut state = ctx.create_state()?;
-            state.full(params, &audio_data)?;
+            // Run the CPU-heavy inference under block_in_place so it doesn't stall a
+            // tokio worker. WhisperState is !Send, so spawn_blocking isn't an option;
+            // block_in_place keeps the work on this thread while yielding the runtime.
+            tokio::task::block_in_place(|| state.full(params, &audio_data))?;
             let num_segments = state.full_n_segments();
 
             (num_segments, state)
@@ -795,7 +798,8 @@ impl WhisperEngine {
                       transcription_count, audio_data.len(), duration_seconds);
         }
         let mut state = ctx.create_state()?;
-        state.full(params, &audio_data)?;
+        // CPU-heavy inference off the tokio worker (WhisperState is !Send).
+        tokio::task::block_in_place(|| state.full(params, &audio_data))?;
 
         // Extract text with improved segment handling
         let num_segments = state.full_n_segments()?;

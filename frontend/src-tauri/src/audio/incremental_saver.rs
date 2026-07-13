@@ -211,7 +211,12 @@ impl IncrementalAudioSaver {
             command.creation_flags(CREATE_NO_WINDOW);
         }
 
-        let ffmpeg_output = command.output()?;
+        // Run the concat off the tokio worker. The Command is Send, so
+        // spawn_blocking works on any runtime (block_in_place would panic on the
+        // current-thread runtime the tests use).
+        let ffmpeg_output = tokio::task::spawn_blocking(move || command.output())
+            .await
+            .map_err(|e| anyhow!("ffmpeg merge task panicked: {}", e))??;
 
         if !ffmpeg_output.status.success() {
             let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);

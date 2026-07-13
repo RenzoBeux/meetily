@@ -42,6 +42,28 @@ static IS_RECORDING: AtomicBool = AtomicBool::new(false);
 // Ensures a fatal-error-triggered finalize runs at most once per session (reset at start).
 static FATAL_STOP_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
+/// Releases the `IS_RECORDING` slot on drop unless committed. Lets the two start
+/// paths claim the slot with a single compare-exchange up front and still free it
+/// on any early-return error (or panic) during setup, without a manual reset at
+/// every fallible site.
+struct RecordingSlotGuard {
+    committed: bool,
+}
+
+impl RecordingSlotGuard {
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for RecordingSlotGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            IS_RECORDING.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
 // Throttles the recording-error emit: a dead device reports recoverable errors
 // continuously, and flooding the frontend toast crashes the webview.
 static LAST_RECORDING_ERROR_EMIT_MS: std::sync::atomic::AtomicU64 =
@@ -363,12 +385,16 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         meeting_name
     );
 
-    // Check if already recording
-    let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
-    info!("🔍 IS_RECORDING state check: {}", current_recording_state);
-    if current_recording_state {
+    // Claim the recording slot atomically — closes the check-then-set TOCTOU
+    // where two rapid starts both pass the check before either sets the flag.
+    // `recording_slot` releases the slot if any setup step below returns Err.
+    if IS_RECORDING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return Err("Recording already in progress".to_string());
     }
+    let mut recording_slot = RecordingSlotGuard { committed: false };
 
     // Refuse to start on a critically-full disk (prevents mid-meeting truncation).
     preflight_checks(&app)?;
@@ -591,6 +617,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
 
     info!("✅ Recording started successfully with async-first approach");
 
+    // Commit: keep IS_RECORDING claimed now that startup fully succeeded.
+    recording_slot.commit();
     Ok(())
 }
 
@@ -615,12 +643,16 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         mic_device_name, system_device_name, meeting_name
     );
 
-    // Check if already recording
-    let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
-    info!("🔍 IS_RECORDING state check: {}", current_recording_state);
-    if current_recording_state {
+    // Claim the recording slot atomically — closes the check-then-set TOCTOU
+    // where two rapid starts both pass the check before either sets the flag.
+    // `recording_slot` releases the slot if any setup step below returns Err.
+    if IS_RECORDING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return Err("Recording already in progress".to_string());
     }
+    let mut recording_slot = RecordingSlotGuard { committed: false };
 
     // Refuse to start on a critically-full disk (prevents mid-meeting truncation).
     preflight_checks(&app)?;
@@ -769,6 +801,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     info!("✅ Recording started with custom devices using async-first approach");
 
+    // Commit: keep IS_RECORDING claimed now that startup fully succeeded.
+    recording_slot.commit();
     Ok(())
 }
 

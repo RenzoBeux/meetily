@@ -671,7 +671,7 @@ impl AudioPipeline {
         mic_device_kind: super::device_detection::InputDeviceKind,
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         // Log device characteristics for adaptive buffering
         info!("🎛️ AudioPipeline initializing with device characteristics:");
         info!("   Mic: '{}' ({:?}) - Buffer: {:?}",
@@ -697,7 +697,7 @@ impl AudioPipeline {
             }
             Err(e) => {
                 error!("Failed to create mic VAD processor: {}", e);
-                panic!("VAD processor creation failed: {}", e);
+                return Err(anyhow::anyhow!("Failed to create mic VAD processor: {}", e));
             }
         };
 
@@ -705,7 +705,7 @@ impl AudioPipeline {
             Ok(processor) => processor,
             Err(e) => {
                 error!("Failed to create system VAD processor: {}", e);
-                panic!("VAD processor creation failed: {}", e);
+                return Err(anyhow::anyhow!("Failed to create system VAD processor: {}", e));
             }
         };
 
@@ -715,7 +715,7 @@ impl AudioPipeline {
         // Note: target_chunk_duration_ms is ignored - VAD controls segmentation now
         let _ = target_chunk_duration_ms;
 
-        Self {
+        Ok(Self {
             receiver,
             transcription_sender,
             state,
@@ -730,7 +730,7 @@ impl AudioPipeline {
             metrics_batcher: Some(AudioMetricsBatcher::new()),
             ring_buffer,
             recording_sender_for_mixed: None,  // Will be set by manager
-        }
+        })
     }
 
     /// Run the VAD-driven audio processing pipeline
@@ -977,7 +977,7 @@ impl AudioPipelineManager {
             mic_device_kind,
             system_device_name,
             system_device_kind,
-        );
+        )?;
 
         // CRITICAL FIX: Connect recording sender to receive pre-mixed audio
         // This ensures both mic AND system audio are captured in recordings

@@ -209,11 +209,11 @@ async fn is_recording() -> bool {
 }
 
 #[tauri::command]
-fn read_audio_file(file_path: String) -> Result<Vec<u8>, String> {
-    match std::fs::read(&file_path) {
-        Ok(data) => Ok(data),
-        Err(e) => Err(format!("Failed to read audio file: {}", e)),
-    }
+async fn read_audio_file(file_path: String) -> Result<Vec<u8>, String> {
+    // Async fs read keeps large-file I/O off the command worker thread.
+    tokio::fs::read(&file_path)
+        .await
+        .map_err(|e| format!("Failed to read audio file: {}", e))
 }
 
 #[tauri::command]
