@@ -38,6 +38,9 @@ pub use super::transcription::TranscriptUpdate;
 // Simple recording state tracking
 static IS_RECORDING: AtomicBool = AtomicBool::new(false);
 
+// Ensures a fatal-error-triggered finalize runs at most once per session (reset at start).
+static FATAL_STOP_TRIGGERED: AtomicBool = AtomicBool::new(false);
+
 // Global recording manager and transcription task to keep them alive during recording
 static RECORDING_MANAGER: Mutex<Option<RecordingManager>> = Mutex::new(None);
 static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
@@ -59,6 +62,49 @@ pub struct TranscriptionStatus {
     pub chunks_in_queue: usize,
     pub is_processing: bool,
     pub last_activity_ms: u64,
+}
+
+/// Build the recording error callback. It always surfaces the error to the UI, and — for
+/// a FATAL (non-recoverable) error — routes the stop through the FULL stop path
+/// (`stop_recording`) so the partial meeting is saved, audio finalized, IS_RECORDING
+/// cleared, and the UI returns to idle. Without this, `RecordingState::report_error` only
+/// flips atomics: streams keep running and the app stays falsely "recording".
+fn make_error_callback<R: Runtime>(
+    app: AppHandle<R>,
+) -> impl Fn(&super::recording_state::AudioError) + Send + Sync + 'static {
+    move |error: &super::recording_state::AudioError| {
+        let _ = app.emit("recording-error", error.user_message());
+
+        // Only the first fatal error finalizes; guard against re-entry and don't fight a
+        // concurrent user Stop (stop_recording no-ops if IS_RECORDING is already false).
+        if !error.is_recoverable()
+            && IS_RECORDING.load(Ordering::SeqCst)
+            && FATAL_STOP_TRIGGERED
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                error!("Fatal recording error — finalizing and stopping recording");
+                let save_path = app
+                    .path()
+                    .app_data_dir()
+                    .ok()
+                    .map(|dir| {
+                        let ts = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S").to_string();
+                        dir.join(format!("recording-{}.wav", ts))
+                            .to_string_lossy()
+                            .to_string()
+                    })
+                    .unwrap_or_default();
+                if let Err(e) = stop_recording(app.clone(), RecordingArgs { save_path }).await {
+                    error!("Fatal-error finalize failed: {}", e);
+                }
+                // Drive the frontend's post-processing/navigation + return UI to idle.
+                let _ = app.emit("recording-stop-complete", true);
+            });
+        }
+    }
 }
 
 // ============================================================================
@@ -102,6 +148,67 @@ fn check_free_disk_space<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     Ok(())
 }
 
+/// Preflight before recording: disk space + ffmpeg runnable + recordings folder writable.
+/// ffmpeg/folder failures ABORT the start (audio finalization and the on-disk artifacts
+/// depend on them) — a clear up-front failure beats recording into a void that can't be
+/// saved. The disk check stays best-effort.
+fn preflight_checks<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    check_free_disk_space(app)?;
+
+    // ffmpeg must be runnable — checkpoint encode + final audio merge depend on it.
+    match super::ffmpeg::find_ffmpeg_path() {
+        Some(path) => {
+            let mut cmd = std::process::Command::new(&path);
+            cmd.arg("-version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            let ok = cmd.status().map(|s| s.success()).unwrap_or(false);
+            if !ok {
+                return Err(
+                    "FFmpeg was found but could not run. Recording needs FFmpeg to save audio.".to_string(),
+                );
+            }
+        }
+        None => {
+            return Err(
+                "FFmpeg was not found. Recording needs FFmpeg to save audio — please install it and try again.".to_string(),
+            );
+        }
+    }
+
+    // Recordings folder must be writable — probe with a temp file (pairs with the
+    // folder-init abort in recording_saver so we fail before capturing anything).
+    let folder = super::recording_preferences::get_default_recordings_folder();
+    if let Err(e) = std::fs::create_dir_all(&folder) {
+        return Err(format!(
+            "Cannot create the recordings folder ({}): {}",
+            folder.display(),
+            e
+        ));
+    }
+    let probe = folder.join(".murmur-write-probe");
+    match std::fs::write(&probe, b"ok") {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+        }
+        Err(e) => {
+            return Err(format!(
+                "The recordings folder is not writable ({}): {}",
+                folder.display(),
+                e
+            ))
+        }
+    }
+
+    Ok(())
+}
+
 /// Start recording with default devices
 pub async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     start_recording_with_meeting_name(app, None).await
@@ -125,7 +232,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     }
 
     // Refuse to start on a critically-full disk (prevents mid-meeting truncation).
-    check_free_disk_space(&app)?;
+    preflight_checks(&app)?;
 
     // Validate that transcription models are available before starting recording
     info!("🔍 Validating transcription model availability before starting recording...");
@@ -264,11 +371,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     });
     manager.set_meeting_name(Some(effective_meeting_name));
 
-    // Set up error callback
-    let app_for_error = app.clone();
-    manager.set_error_callback(move |error| {
-        let _ = app_for_error.emit("recording-error", error.user_message());
-    });
+    // Set up error callback (surfaces errors + finalizes on a fatal error).
+    manager.set_error_callback(make_error_callback(app.clone()));
 
     // Start recording with resolved devices (replaces start_recording_with_defaults_and_auto_save call)
     let transcription_receiver = manager
@@ -285,6 +389,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // Set recording flag and reset speech detection flag
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
+    FATAL_STOP_TRIGGERED.store(false, Ordering::SeqCst); // Reset fatal-stop guard
     reset_speech_detected_flag(); // Reset for new recording session
 
     // Start optimized parallel transcription task and store handle
@@ -372,7 +477,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     }
 
     // Refuse to start on a critically-full disk (prevents mid-meeting truncation).
-    check_free_disk_space(&app)?;
+    preflight_checks(&app)?;
 
     // Validate that transcription models are available before starting recording
     info!("🔍 Validating transcription model availability before starting recording...");
@@ -436,11 +541,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     });
     manager.set_meeting_name(Some(effective_meeting_name));
 
-    // Set up error callback
-    let app_for_error = app.clone();
-    manager.set_error_callback(move |error| {
-        let _ = app_for_error.emit("recording-error", error.user_message());
-    });
+    // Set up error callback (surfaces errors + finalizes on a fatal error).
+    manager.set_error_callback(make_error_callback(app.clone()));
 
     // Start recording with specified devices and auto_save setting
     let transcription_receiver = manager
@@ -457,6 +559,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     // Set recording flag and reset speech detection flag
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
+    FATAL_STOP_TRIGGERED.store(false, Ordering::SeqCst); // Reset fatal-stop guard
     reset_speech_detected_flag(); // Reset for new recording session
 
     // Start optimized parallel transcription task and store handle
