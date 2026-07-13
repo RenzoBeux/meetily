@@ -607,6 +607,9 @@ pub fn run() {
             audio::incremental_saver::recover_audio_from_checkpoints,
             audio::incremental_saver::cleanup_checkpoints,
             audio::incremental_saver::has_audio_checkpoints,
+            // Filesystem crash recovery (independent of webview IndexedDB)
+            audio::recovery_scan::scan_interrupted_recordings,
+            audio::recovery_scan::import_interrupted_recording,
             console_utils::show_console,
             console_utils::hide_console,
             console_utils::toggle_console,

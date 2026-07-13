@@ -15,6 +15,17 @@ impl MeetingsRepository {
         Ok(meetings)
     }
 
+    /// All non-empty `folder_path`s, used by the filesystem recovery scan to dedup
+    /// interrupted-recording folders against meetings already saved to SQLite.
+    pub async fn list_folder_paths(pool: &SqlitePool) -> Result<Vec<String>, SqlxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT folder_path FROM meetings WHERE folder_path IS NOT NULL AND folder_path != ''",
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().map(|(p,)| p).collect())
+    }
+
     pub async fn delete_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<bool, SqlxError> {
         if meeting_id.trim().is_empty() {
             return Err(SqlxError::Protocol(

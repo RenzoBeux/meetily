@@ -16,6 +16,7 @@ import { useRecordingStateSync } from '@/hooks/useRecordingStateSync';
 import { useRecordingStart } from '@/hooks/useRecordingStart';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
 import { useTranscriptRecovery } from '@/hooks/useTranscriptRecovery';
+import { useFilesystemRecovery } from '@/hooks/useFilesystemRecovery';
 import { TranscriptRecovery } from '@/components/TranscriptRecovery';
 import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
@@ -61,6 +62,11 @@ export default function Home() {
     deleteRecoverableMeeting
   } = useTranscriptRecovery();
 
+  // Filesystem-based recovery (independent of IndexedDB): reads the transcripts.json
+  // Rust writes to disk, so a meeting that never journaled to the webview is still
+  // recoverable.
+  const { checkForInterruptedRecordings, recoverFromFolder } = useFilesystemRecovery();
+
   const router = useRouter();
 
   // Startup recovery check
@@ -96,13 +102,70 @@ export default function Home() {
         } catch (error) {
           console.warn('⚠️ Failed to clean up saved meetings:', error);
         }
+
+        // 4. Filesystem recovery (independent of IndexedDB): find interrupted
+        //    recordings on disk the IndexedDB dialog won't already show (dedup by
+        //    folder path) and offer a one-click recover. Runs even when IndexedDB has
+        //    nothing — it's the durable safety net.
+        try {
+          const disk = await checkForInterruptedRecordings();
+          if (disk.length > 0) {
+            const idbMeetings = await indexedDBService.getAllMeetings();
+            const idbFolders = new Set(idbMeetings.map((m) => m.folderPath).filter(Boolean));
+            const diskOnly = disk.filter((d) => !idbFolders.has(d.folder_path));
+            if (diskOnly.length > 0) {
+              toast.info(
+                `Found ${diskOnly.length} interrupted recording${diskOnly.length > 1 ? 's' : ''} on disk`,
+                {
+                  id: 'filesystem-recovery',
+                  description: "A recording didn't finish saving. Recover it now?",
+                  duration: Infinity,
+                  action: {
+                    label: 'Recover',
+                    onClick: async () => {
+                      let recovered = 0;
+                      let lastId: string | undefined;
+                      for (const item of diskOnly) {
+                        try {
+                          const res = await recoverFromFolder(item.folder_path);
+                          lastId = res.meeting_id;
+                          recovered++;
+                        } catch (e) {
+                          console.warn('Filesystem recovery import failed:', e);
+                        }
+                      }
+                      if (recovered > 0) {
+                        await refetchMeetings();
+                        toast.success(
+                          `Recovered ${recovered} meeting${recovered > 1 ? 's' : ''} from disk`,
+                          {
+                            action: lastId
+                              ? {
+                                  label: 'View',
+                                  onClick: () => router.push(`/meeting-details?id=${lastId}`),
+                                }
+                              : undefined,
+                          }
+                        );
+                      } else {
+                        toast.error('Could not recover the interrupted recording(s)');
+                      }
+                    },
+                  },
+                }
+              );
+            }
+          }
+        } catch (error) {
+          console.warn('Filesystem recovery scan failed:', error);
+        }
       } catch (error) {
         console.error('Failed to perform startup checks:', error);
       }
     };
 
     performStartupChecks();
-  }, [checkForRecoverableTranscripts, recordingState.isRecording, status]);
+  }, [checkForRecoverableTranscripts, checkForInterruptedRecordings, recoverFromFolder, recordingState.isRecording, status]);
 
   // Watch for recoverable meetings changes and show dialog once per session
   useEffect(() => {
