@@ -393,6 +393,69 @@ impl MeetingsRepository {
         transaction.commit().await?;
         Ok(true)
     }
+
+    /// Attach a free-text tag to a meeting (idempotent via the composite PK).
+    /// The tag is trimmed; empty tags are rejected. Returns true if a new tag
+    /// row was created (false if the meeting already had it).
+    pub async fn add_tag(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        tag: &str,
+    ) -> Result<bool, SqlxError> {
+        let tag = tag.trim();
+        if meeting_id.trim().is_empty() || tag.is_empty() {
+            return Err(SqlxError::Protocol(
+                "meeting_id and tag must be non-empty".to_string(),
+            ));
+        }
+        let result = sqlx::query("INSERT OR IGNORE INTO meeting_tags (meeting_id, tag) VALUES (?, ?)")
+            .bind(meeting_id)
+            .bind(tag)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Remove a tag from a meeting. Returns true if a row was removed.
+    pub async fn remove_tag(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        tag: &str,
+    ) -> Result<bool, SqlxError> {
+        let result = sqlx::query("DELETE FROM meeting_tags WHERE meeting_id = ? AND tag = ?")
+            .bind(meeting_id)
+            .bind(tag.trim())
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// All tags on a meeting, case-insensitively sorted.
+    pub async fn get_tags(pool: &SqlitePool, meeting_id: &str) -> Result<Vec<String>, SqlxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT tag FROM meeting_tags WHERE meeting_id = ? ORDER BY tag COLLATE NOCASE",
+        )
+        .bind(meeting_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().map(|(t,)| t).collect())
+    }
+
+    /// Distinct tags across all LIVE (non-trashed) meetings, with usage counts,
+    /// for the sidebar filter chips. Trashed meetings don't contribute.
+    pub async fn list_all_tags(pool: &SqlitePool) -> Result<Vec<(String, i64)>, SqlxError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT mt.tag, COUNT(*) AS n \
+             FROM meeting_tags mt \
+             JOIN meetings m ON m.id = mt.meeting_id \
+             WHERE m.deleted_at IS NULL \
+             GROUP BY mt.tag \
+             ORDER BY mt.tag COLLATE NOCASE",
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
 }
 
 async fn delete_meeting_with_transaction(
@@ -425,6 +488,13 @@ async fn delete_meeting_with_transaction(
 
     // 3. Delete from transcripts
     sqlx::query("DELETE FROM transcripts WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
+    // 3b. Delete tags (also covered by FK ON DELETE CASCADE, but explicit here
+    // to match the manual-cascade style of the other child tables).
+    sqlx::query("DELETE FROM meeting_tags WHERE meeting_id = ?")
         .bind(meeting_id)
         .execute(&mut *transaction)
         .await?;
@@ -634,5 +704,64 @@ mod tests {
             matches!(err, sqlx::Error::RowNotFound),
             "get_meeting on a missing id returns RowNotFound, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn tags_add_list_remove_and_count() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1", "A").await;
+        insert_meeting(&pool, "m2", "B").await;
+
+        assert!(MeetingsRepository::add_tag(&pool, "m1", " work ").await.unwrap()); // trimmed
+        assert!(MeetingsRepository::add_tag(&pool, "m1", "urgent").await.unwrap());
+        assert!(
+            !MeetingsRepository::add_tag(&pool, "m1", "work").await.unwrap(),
+            "re-adding an existing tag is a no-op"
+        );
+        assert!(MeetingsRepository::add_tag(&pool, "m2", "work").await.unwrap());
+
+        assert_eq!(
+            MeetingsRepository::get_tags(&pool, "m1").await.unwrap(),
+            vec!["urgent".to_string(), "work".to_string()]
+        );
+
+        assert_eq!(
+            MeetingsRepository::list_all_tags(&pool).await.unwrap(),
+            vec![("urgent".to_string(), 1), ("work".to_string(), 2)]
+        );
+
+        assert!(MeetingsRepository::remove_tag(&pool, "m1", "urgent").await.unwrap());
+        assert_eq!(
+            MeetingsRepository::get_tags(&pool, "m1").await.unwrap(),
+            vec!["work".to_string()]
+        );
+
+        assert!(
+            MeetingsRepository::add_tag(&pool, "m1", "   ").await.is_err(),
+            "empty/whitespace tag is rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn tags_respect_trash_and_purge() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1", "A").await;
+        MeetingsRepository::add_tag(&pool, "m1", "work").await.unwrap();
+
+        // A trashed meeting doesn't contribute to the filter-chip counts...
+        MeetingsRepository::delete_meeting(&pool, "m1").await.unwrap();
+        assert!(MeetingsRepository::list_all_tags(&pool).await.unwrap().is_empty());
+        // ...but its tags survive, so restore brings them back.
+        MeetingsRepository::restore_meeting(&pool, "m1").await.unwrap();
+        assert_eq!(MeetingsRepository::list_all_tags(&pool).await.unwrap().len(), 1);
+        assert_eq!(MeetingsRepository::get_tags(&pool, "m1").await.unwrap(), vec!["work".to_string()]);
+
+        // A hard purge cascades to the tag rows.
+        MeetingsRepository::purge_meeting(&pool, "m1").await.unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM meeting_tags")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "purge cascades to tags");
     }
 }

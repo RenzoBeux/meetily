@@ -204,6 +204,31 @@ pub async fn search_index_exists(pool: &SqlitePool) -> bool {
     .unwrap_or(false)
 }
 
+/// Whether the `meeting_tags` table exists. A pre-tags DB opened via `--db`
+/// simply ignores any `tag` scoping argument.
+async fn meeting_tags_exists(pool: &SqlitePool) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meeting_tags'",
+    )
+    .fetch_one(pool)
+    .await
+    .map(|count| count > 0)
+    .unwrap_or(false)
+}
+
+/// `EXISTS (…)` fragment scoping a `meetings m` query to a single tag. The
+/// fragment is a compile-time literal (the tag value is bound), so it is
+/// injection-safe. Returns None when there's no usable tag or the table is
+/// absent — the caller then binds nothing extra.
+async fn tag_scope_clause<'a>(pool: &SqlitePool, tag: Option<&'a str>) -> Option<&'a str> {
+    let tag = tag.map(str::trim).filter(|t| !t.is_empty())?;
+    if meeting_tags_exists(pool).await {
+        Some(tag)
+    } else {
+        None
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tools
 // ---------------------------------------------------------------------------
@@ -222,28 +247,41 @@ async fn meetings_has_soft_delete(pool: &SqlitePool) -> bool {
     .unwrap_or(false)
 }
 
-pub async fn list_meetings(pool: &SqlitePool, limit: i64) -> Result<String> {
-    // Hide trashed meetings when the schema supports it (see meetings_has_soft_delete).
-    let trash_filter = if meetings_has_soft_delete(pool).await {
-        "WHERE m.deleted_at IS NULL"
+pub async fn list_meetings(pool: &SqlitePool, limit: i64, tag: Option<&str>) -> Result<String> {
+    // Build the WHERE incrementally: hide trashed meetings when the schema
+    // supports it, and optionally scope to a tag.
+    let mut conds: Vec<&str> = Vec::new();
+    if meetings_has_soft_delete(pool).await {
+        conds.push("m.deleted_at IS NULL");
+    }
+    let scoped_tag = tag_scope_clause(pool, tag).await;
+    if scoped_tag.is_some() {
+        conds.push("EXISTS (SELECT 1 FROM meeting_tags mt WHERE mt.meeting_id = m.id AND mt.tag = ?)");
+    }
+    let where_clause = if conds.is_empty() {
+        String::new()
     } else {
-        ""
+        format!("WHERE {}", conds.join(" AND "))
     };
     let sql = format!(
         "SELECT m.id, m.title, m.created_at, sp.status AS summary_status \
          FROM meetings m \
          LEFT JOIN summary_processes sp ON sp.meeting_id = m.id \
-         {trash_filter} \
+         {where_clause} \
          ORDER BY m.created_at DESC \
          LIMIT ?"
     );
-    let rows = sqlx::query(&sql)
-        .bind(limit.clamp(1, 500))
-        .fetch_all(pool)
-        .await?;
+    let mut q = sqlx::query(&sql);
+    if let Some(t) = scoped_tag {
+        q = q.bind(t);
+    }
+    let rows = q.bind(limit.clamp(1, 500)).fetch_all(pool).await?;
 
     if rows.is_empty() {
-        return Ok("No meetings found in the Murmur database yet.".to_string());
+        return Ok(match scoped_tag {
+            Some(t) => format!("No meetings found with tag '{t}'."),
+            None => "No meetings found in the Murmur database yet.".to_string(),
+        });
     }
     let mut lines = vec![format!("Found {} meeting(s):", rows.len()), String::new()];
     for row in &rows {
@@ -381,19 +419,25 @@ pub async fn get_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<String> 
     Ok(format!("{summary}\n\n---\n\n{transcript}"))
 }
 
-pub async fn search_transcripts(pool: &SqlitePool, query: &str, limit: i64) -> Result<String> {
+pub async fn search_transcripts(
+    pool: &SqlitePool,
+    query: &str,
+    limit: i64,
+    tag: Option<&str>,
+) -> Result<String> {
     let query = query.trim();
     if query.is_empty() {
         return Ok("Please provide a non-empty search query.".to_string());
     }
     let limit = limit.clamp(1, 100);
+    let scoped_tag = tag_scope_clause(pool, tag).await;
 
     // Prefer the FTS5 index (all content sources, diacritic-insensitive); fall
     // back to LIKE over transcripts/chunks for a pre-FTS DB opened via `--db`.
     let results: Vec<(String, String, String)> = if search_index_exists(pool).await {
-        fts_search_rows(pool, query, limit).await?
+        fts_search_rows(pool, query, limit, scoped_tag).await?
     } else {
-        like_search_rows(pool, query, limit).await?
+        like_search_rows(pool, query, limit, scoped_tag).await?
     };
 
     if results.is_empty() {
@@ -415,25 +459,32 @@ async fn fts_search_rows(
     pool: &SqlitePool,
     query: &str,
     limit: i64,
+    tag: Option<&str>,
 ) -> Result<Vec<(String, String, String)>> {
     let match_query = to_fts_match_query(query);
     if match_query.is_empty() {
         return Ok(Vec::new());
     }
+    let tag_cond = if tag.is_some() {
+        " AND EXISTS (SELECT 1 FROM meeting_tags mt WHERE mt.meeting_id = m.id AND mt.tag = ?)"
+    } else {
+        ""
+    };
     // Over-fetch so per-meeting dedup can still yield up to `limit` distinct meetings.
-    let rows = sqlx::query(
+    let sql = format!(
         "SELECT search_index.meeting_id AS mid, m.title AS title, \
                 snippet(search_index, 3, '', '', '…', 12) AS ctx \
          FROM search_index \
          JOIN meetings m ON m.id = search_index.meeting_id \
-         WHERE search_index MATCH ? AND m.deleted_at IS NULL \
+         WHERE search_index MATCH ? AND m.deleted_at IS NULL{tag_cond} \
          ORDER BY rank \
-         LIMIT ?",
-    )
-    .bind(&match_query)
-    .bind(limit.saturating_mul(4))
-    .fetch_all(pool)
-    .await?;
+         LIMIT ?"
+    );
+    let mut q = sqlx::query(&sql).bind(&match_query);
+    if let Some(t) = tag {
+        q = q.bind(t);
+    }
+    let rows = q.bind(limit.saturating_mul(4)).fetch_all(pool).await?;
 
     let mut results: Vec<(String, String, String)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -459,10 +510,16 @@ async fn like_search_rows(
     pool: &SqlitePool,
     query: &str,
     limit: i64,
+    tag: Option<&str>,
 ) -> Result<Vec<(String, String, String)>> {
     let like = format!("%{}%", query.to_lowercase());
     let sd_and = if meetings_has_soft_delete(pool).await {
         "m.deleted_at IS NULL AND "
+    } else {
+        ""
+    };
+    let tag_cond = if tag.is_some() {
+        " AND EXISTS (SELECT 1 FROM meeting_tags mt WHERE mt.meeting_id = m.id AND mt.tag = ?)"
     } else {
         ""
     };
@@ -474,15 +531,15 @@ async fn like_search_rows(
         "SELECT m.id, m.title, t.transcript \
          FROM meetings m \
          JOIN transcripts t ON t.meeting_id = m.id \
-         WHERE {sd_and}LOWER(t.transcript) LIKE ? \
+         WHERE {sd_and}LOWER(t.transcript) LIKE ?{tag_cond} \
          ORDER BY m.created_at DESC \
          LIMIT ?"
     );
-    let seg_rows = sqlx::query(&seg_sql)
-        .bind(&like)
-        .bind(limit)
-        .fetch_all(pool)
-        .await?;
+    let mut seg_q = sqlx::query(&seg_sql).bind(&like);
+    if let Some(t) = tag {
+        seg_q = seg_q.bind(t);
+    }
+    let seg_rows = seg_q.bind(limit).fetch_all(pool).await?;
     for row in &seg_rows {
         let id: String = row.try_get("id")?;
         let title: String = row.try_get("title")?;
@@ -496,15 +553,15 @@ async fn like_search_rows(
             "SELECT m.id, m.title, tc.transcript_text \
              FROM meetings m \
              JOIN transcript_chunks tc ON tc.meeting_id = m.id \
-             WHERE {sd_and}LOWER(tc.transcript_text) LIKE ? \
+             WHERE {sd_and}LOWER(tc.transcript_text) LIKE ?{tag_cond} \
              ORDER BY m.created_at DESC \
              LIMIT ?"
         );
-        let chunk_rows = sqlx::query(&chunk_sql)
-            .bind(&like)
-            .bind(limit)
-            .fetch_all(pool)
-            .await?;
+        let mut chunk_q = sqlx::query(&chunk_sql).bind(&like);
+        if let Some(t) = tag {
+            chunk_q = chunk_q.bind(t);
+        }
+        let chunk_rows = chunk_q.bind(limit).fetch_all(pool).await?;
         for row in &chunk_rows {
             let id: String = row.try_get("id")?;
             if seen.contains(&id) {
@@ -632,7 +689,7 @@ mod tests {
             .await
             .unwrap();
 
-        let listing = list_meetings(&pool, 10).await.unwrap();
+        let listing = list_meetings(&pool, 10, None).await.unwrap();
         assert!(listing.contains("Standup"));
         assert!(listing.contains("📝 summary"));
 
@@ -642,7 +699,7 @@ mod tests {
         let summary = get_summary(&pool, "m1").await.unwrap();
         assert!(summary.contains("- done"));
 
-        let found = search_transcripts(&pool, "ROADMAP", 5).await.unwrap();
+        let found = search_transcripts(&pool, "ROADMAP", 5, None).await.unwrap();
         assert!(found.contains("`m1`"));
 
         let missing = get_transcript(&pool, "nope").await.unwrap();
@@ -662,11 +719,11 @@ mod tests {
                 .bind(tid).bind(mid).execute(&pool).await.unwrap();
         }
 
-        let listing = list_meetings(&pool, 10).await.unwrap();
+        let listing = list_meetings(&pool, 10, None).await.unwrap();
         assert!(listing.contains("Kept"));
         assert!(!listing.contains("Trashed"), "trashed meeting hidden from list_meetings");
 
-        let found = search_transcripts(&pool, "alpha", 10).await.unwrap();
+        let found = search_transcripts(&pool, "alpha", 10, None).await.unwrap();
         assert!(found.contains("`m1`"));
         assert!(!found.contains("`m2`"), "trashed meeting hidden from MCP search");
     }
@@ -696,8 +753,8 @@ mod tests {
         sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, speaker) VALUES ('t1','m1','legacy keyword beta','[00:00]',0.0,1.0,NULL)")
             .execute(&pool).await.unwrap();
 
-        assert!(list_meetings(&pool, 10).await.unwrap().contains("Legacy"));
-        assert!(search_transcripts(&pool, "beta", 10).await.unwrap().contains("`m1`"));
+        assert!(list_meetings(&pool, 10, None).await.unwrap().contains("Legacy"));
+        assert!(search_transcripts(&pool, "beta", 10, None).await.unwrap().contains("`m1`"));
     }
 
     /// When the FTS5 `search_index` exists, MCP search uses it: cross-source,
@@ -715,12 +772,41 @@ mod tests {
 
         assert!(search_index_exists(&pool).await, "migrated DB has the FTS index");
         // Diacritic-insensitive FTS match ("cafe" → "café").
-        let found = search_transcripts(&pool, "cafe", 10).await.unwrap();
+        let found = search_transcripts(&pool, "cafe", 10, None).await.unwrap();
         assert!(found.contains("`m1`"), "FTS finds diacritic-folded match");
 
         // Trashed meetings are excluded from FTS search too.
         MeetingsRepository::delete_meeting(&pool, "m1").await.unwrap();
-        let after = search_transcripts(&pool, "cafe", 10).await.unwrap();
+        let after = search_transcripts(&pool, "cafe", 10, None).await.unwrap();
         assert!(!after.contains("`m1`"), "trashed meeting excluded from FTS search");
+    }
+
+    #[tokio::test]
+    async fn mcp_tag_scoping_filters_list_and_search() {
+        use crate::database::repositories::meeting::MeetingsRepository;
+        use crate::database::test_support::migrated_pool;
+
+        let pool = migrated_pool().await;
+        for (id, title) in [("m1", "Tagged"), ("m2", "Untagged")] {
+            sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, ?, '2026-07-01','2026-07-01')")
+                .bind(id).bind(title).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES (?, ?, 'shared keyword zeta', '[00:00]')")
+                .bind(format!("t-{id}")).bind(id).execute(&pool).await.unwrap();
+        }
+        MeetingsRepository::add_tag(&pool, "m1", "work").await.unwrap();
+
+        // list_meetings scoped to the tag returns only the tagged meeting.
+        let listed = list_meetings(&pool, 10, Some("work")).await.unwrap();
+        assert!(listed.contains("`m1`") && !listed.contains("`m2`"), "tag scopes list_meetings");
+
+        // Search scoped to the tag returns only m1, though both transcripts match.
+        let searched = search_transcripts(&pool, "zeta", 10, Some("work")).await.unwrap();
+        assert!(searched.contains("`m1`") && !searched.contains("`m2`"), "tag scopes search");
+
+        // An unused tag yields nothing.
+        assert!(list_meetings(&pool, 10, Some("nope"))
+            .await
+            .unwrap()
+            .contains("No meetings found with tag"));
     }
 }

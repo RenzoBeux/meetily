@@ -691,6 +691,74 @@ pub async fn api_restore_meeting<R: Runtime>(
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TagCount {
+    pub tag: String,
+    pub count: i64,
+}
+
+/// Attach a tag to a meeting. Returns true if newly added (false if it already had it).
+#[tauri::command]
+pub async fn api_add_meeting_tag<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    tag: String,
+    _auth_token: Option<String>,
+) -> Result<bool, String> {
+    let pool = state.db_manager.pool();
+    MeetingsRepository::add_tag(pool, &meeting_id, &tag)
+        .await
+        .map_err(|e| format!("Failed to add tag: {}", e))
+}
+
+/// Remove a tag from a meeting. Returns true if a tag was removed.
+#[tauri::command]
+pub async fn api_remove_meeting_tag<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    tag: String,
+    _auth_token: Option<String>,
+) -> Result<bool, String> {
+    let pool = state.db_manager.pool();
+    MeetingsRepository::remove_tag(pool, &meeting_id, &tag)
+        .await
+        .map_err(|e| format!("Failed to remove tag: {}", e))
+}
+
+/// All tags on a single meeting.
+#[tauri::command]
+pub async fn api_get_meeting_tags<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    _auth_token: Option<String>,
+) -> Result<Vec<String>, String> {
+    let pool = state.db_manager.pool();
+    MeetingsRepository::get_tags(pool, &meeting_id)
+        .await
+        .map_err(|e| format!("Failed to get tags: {}", e))
+}
+
+/// Distinct tags across live meetings with usage counts (for filter chips).
+#[tauri::command]
+pub async fn api_list_all_tags<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    _auth_token: Option<String>,
+) -> Result<Vec<TagCount>, String> {
+    let pool = state.db_manager.pool();
+    MeetingsRepository::list_all_tags(pool)
+        .await
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(tag, count)| TagCount { tag, count })
+                .collect()
+        })
+        .map_err(|e| format!("Failed to list tags: {}", e))
+}
+
 #[tauri::command]
 pub async fn api_get_meeting<R: Runtime>(
     _app: AppHandle<R>,

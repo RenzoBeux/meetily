@@ -64,11 +64,12 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "list_meetings",
-            "description": "List Murmur meetings, most recent first. Returns meeting_id values usable with the other tools, plus whether a summary exists.",
+            "description": "List Murmur meetings, most recent first. Returns meeting_id values usable with the other tools, plus whether a summary exists. Optionally scope to a single tag.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "description": "Maximum number of meetings to return (default 50)."}
+                    "limit": {"type": "integer", "description": "Maximum number of meetings to return (default 50)."},
+                    "tag": {"type": "string", "description": "Optional: only meetings carrying this exact tag."}
                 }
             }
         },
@@ -107,12 +108,13 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "search_transcripts",
-            "description": "Search across all meeting transcripts for a word or phrase (case-insensitive substring match).",
+            "description": "Full-text search across all meeting content (transcripts, summaries, notes, chat), diacritic-insensitive. Returns one match per meeting, most relevant first.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Text to search for."},
-                    "limit": {"type": "integer", "description": "Maximum number of matches (default 20)."}
+                    "limit": {"type": "integer", "description": "Maximum number of matches (default 20)."},
+                    "tag": {"type": "string", "description": "Optional: only search meetings carrying this exact tag."}
                 },
                 "required": ["query"]
             }
@@ -130,14 +132,25 @@ async fn call_tool(pool: &SqlitePool, name: &str, args: &Value) -> Result<String
     let int_arg = |key: &str, default: i64| -> i64 {
         args.get(key).and_then(|v| v.as_i64()).unwrap_or(default)
     };
+    let opt_str_arg = |key: &str| -> Option<String> {
+        args.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|s| !s.trim().is_empty())
+    };
 
     match name {
-        "list_meetings" => tools::list_meetings(pool, int_arg("limit", 50)).await,
+        "list_meetings" => {
+            let tag = opt_str_arg("tag");
+            tools::list_meetings(pool, int_arg("limit", 50), tag.as_deref()).await
+        }
         "get_transcript" => tools::get_transcript(pool, &str_arg("meeting_id")?).await,
         "get_summary" => tools::get_summary(pool, &str_arg("meeting_id")?).await,
         "get_meeting" => tools::get_meeting(pool, &str_arg("meeting_id")?).await,
         "search_transcripts" => {
-            tools::search_transcripts(pool, &str_arg("query")?, int_arg("limit", 20)).await
+            let tag = opt_str_arg("tag");
+            tools::search_transcripts(pool, &str_arg("query")?, int_arg("limit", 20), tag.as_deref())
+                .await
         }
         other => Err(anyhow!("Unknown tool: {other}")),
     }
