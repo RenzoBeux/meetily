@@ -172,6 +172,38 @@ pub fn snippet(text: &str, query: &str) -> String {
     out
 }
 
+/// Turn free-text user input into a safe FTS5 MATCH query. Each whitespace token
+/// is reduced to its alphanumeric characters (diacritics kept — `is_alphanumeric`
+/// is unicode-aware) and wrapped as a quoted prefix term (`"tok"*`). Quoting makes
+/// any FTS operators/punctuation in the input inert (no syntax errors, no query
+/// injection); the `*` gives search-as-you-type prefix matching. Returns `""`
+/// when nothing usable remains — callers must treat that as "no results".
+pub fn to_fts_match_query(raw: &str) -> String {
+    raw.split_whitespace()
+        .filter_map(|token| {
+            let cleaned: String = token.chars().filter(|c| c.is_alphanumeric()).collect();
+            if cleaned.is_empty() {
+                None
+            } else {
+                Some(format!("\"{}\"*", cleaned))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether the FTS5 `search_index` table exists in the opened DB. MCP may open a
+/// pre-FTS database via `--db`; there, search gracefully falls back to LIKE.
+pub async fn search_index_exists(pool: &SqlitePool) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'search_index'",
+    )
+    .fetch_one(pool)
+    .await
+    .map(|count| count > 0)
+    .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------------------
 // Tools
 // ---------------------------------------------------------------------------
@@ -355,10 +387,80 @@ pub async fn search_transcripts(pool: &SqlitePool, query: &str, limit: i64) -> R
         return Ok("Please provide a non-empty search query.".to_string());
     }
     let limit = limit.clamp(1, 100);
-    let like = format!("%{}%", query.to_lowercase());
 
-    // Exclude trashed meetings when the schema supports it. `sd_and` is a
-    // compile-time literal (no user input), so interpolating it is injection-safe.
+    // Prefer the FTS5 index (all content sources, diacritic-insensitive); fall
+    // back to LIKE over transcripts/chunks for a pre-FTS DB opened via `--db`.
+    let results: Vec<(String, String, String)> = if search_index_exists(pool).await {
+        fts_search_rows(pool, query, limit).await?
+    } else {
+        like_search_rows(pool, query, limit).await?
+    };
+
+    if results.is_empty() {
+        return Ok(format!("No transcripts matched '{query}'."));
+    }
+    let mut lines = vec![format!("Found {} match(es) for '{query}':", results.len()), String::new()];
+    for (id, title, context) in &results {
+        lines.push(format!("- **{title}** · `{id}`"));
+        lines.push(format!("  > {context}"));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// FTS5 search across every indexed source (transcripts, chunks, summaries,
+/// notes, chat), deduped to one hit per meeting (best `rank` first) and
+/// excluding trashed meetings. A DB that has `search_index` is necessarily
+/// post-soft-delete, so `meetings.deleted_at` is guaranteed to exist.
+async fn fts_search_rows(
+    pool: &SqlitePool,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<(String, String, String)>> {
+    let match_query = to_fts_match_query(query);
+    if match_query.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Over-fetch so per-meeting dedup can still yield up to `limit` distinct meetings.
+    let rows = sqlx::query(
+        "SELECT search_index.meeting_id AS mid, m.title AS title, \
+                snippet(search_index, 3, '', '', '…', 12) AS ctx \
+         FROM search_index \
+         JOIN meetings m ON m.id = search_index.meeting_id \
+         WHERE search_index MATCH ? AND m.deleted_at IS NULL \
+         ORDER BY rank \
+         LIMIT ?",
+    )
+    .bind(&match_query)
+    .bind(limit.saturating_mul(4))
+    .fetch_all(pool)
+    .await?;
+
+    let mut results: Vec<(String, String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for row in &rows {
+        let id: String = row.try_get("mid")?;
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let title: String = row.try_get("title")?;
+        let ctx: String = row.try_get("ctx")?;
+        results.push((id, title, ctx));
+        if results.len() as i64 >= limit {
+            break;
+        }
+    }
+    Ok(results)
+}
+
+/// Legacy LIKE search over transcripts + legacy chunks, used only when the FTS5
+/// `search_index` is absent (a pre-FTS DB opened via `--db`). Keeps the graceful
+/// soft-delete filter (`sd_and` is a compile-time literal → injection-safe).
+async fn like_search_rows(
+    pool: &SqlitePool,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<(String, String, String)>> {
+    let like = format!("%{}%", query.to_lowercase());
     let sd_and = if meetings_has_soft_delete(pool).await {
         "m.deleted_at IS NULL AND "
     } else {
@@ -415,15 +517,7 @@ pub async fn search_transcripts(pool: &SqlitePool, query: &str, limit: i64) -> R
     }
 
     results.truncate(limit as usize);
-    if results.is_empty() {
-        return Ok(format!("No transcripts matched '{query}'."));
-    }
-    let mut lines = vec![format!("Found {} match(es) for '{query}':", results.len()), String::new()];
-    for (id, title, context) in &results {
-        lines.push(format!("- **{title}** · `{id}`"));
-        lines.push(format!("  > {context}"));
-    }
-    Ok(lines.join("\n"))
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -604,5 +698,29 @@ mod tests {
 
         assert!(list_meetings(&pool, 10).await.unwrap().contains("Legacy"));
         assert!(search_transcripts(&pool, "beta", 10).await.unwrap().contains("`m1`"));
+    }
+
+    /// When the FTS5 `search_index` exists, MCP search uses it: cross-source,
+    /// diacritic-insensitive, and still excluding trashed meetings.
+    #[tokio::test]
+    async fn mcp_search_uses_fts_index_when_present() {
+        use crate::database::repositories::meeting::MeetingsRepository;
+        use crate::database::test_support::migrated_pool;
+
+        let pool = migrated_pool().await;
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m1','Budget','2026-07-01','2026-07-01')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('t1','m1','discutimos el café','[00:00]')")
+            .execute(&pool).await.unwrap();
+
+        assert!(search_index_exists(&pool).await, "migrated DB has the FTS index");
+        // Diacritic-insensitive FTS match ("cafe" → "café").
+        let found = search_transcripts(&pool, "cafe", 10).await.unwrap();
+        assert!(found.contains("`m1`"), "FTS finds diacritic-folded match");
+
+        // Trashed meetings are excluded from FTS search too.
+        MeetingsRepository::delete_meeting(&pool, "m1").await.unwrap();
+        let after = search_transcripts(&pool, "cafe", 10).await.unwrap();
+        assert!(!after.contains("`m1`"), "trashed meeting excluded from FTS search");
     }
 }

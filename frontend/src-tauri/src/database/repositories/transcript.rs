@@ -404,43 +404,51 @@ impl TranscriptsRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Searches for a query string within the transcripts.
-    /// It returns a list of matching transcripts with context.
+    /// Unified full-text search over the FTS5 `search_index` — transcripts,
+    /// legacy chunks, summaries, notes, and chat — diacritic-insensitive and
+    /// excluding trashed meetings. Results are deduped to one hit per meeting
+    /// (best `rank` first); `match_context` is FTS5's match-aware, UTF-8-safe
+    /// snippet, and `timestamp` carries the meeting's `created_at`.
     pub async fn search_transcripts(
         pool: &SqlitePool,
         query: &str,
     ) -> Result<Vec<TranscriptSearchResult>, SqlxError> {
-        if query.trim().is_empty() {
+        let match_query = crate::mcp::tools::to_fts_match_query(query);
+        if match_query.is_empty() {
             return Ok(Vec::new());
         }
 
-        let search_query = format!("%{}%", query.to_lowercase());
-
+        // Over-fetch (400) so per-meeting dedup can still surface up to 100 meetings.
         let rows = sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT m.id, m.title, t.transcript, t.timestamp
-             FROM meetings m
-             JOIN transcripts t ON m.id = t.meeting_id
-             WHERE m.deleted_at IS NULL AND LOWER(t.transcript) LIKE ?
-             LIMIT 100",
+            "SELECT search_index.meeting_id, m.title, \
+                    snippet(search_index, 3, '', '', '…', 12), \
+                    m.created_at \
+             FROM search_index \
+             JOIN meetings m ON m.id = search_index.meeting_id \
+             WHERE search_index MATCH ? AND m.deleted_at IS NULL \
+             ORDER BY rank \
+             LIMIT 400",
         )
-        .bind(&search_query)
+        .bind(&match_query)
         .fetch_all(pool)
         .await?;
 
-        let results = rows
-            .into_iter()
-            .map(|(id, title, transcript, timestamp)| {
-                // Reuse the UTF-8-safe snippet helper (char-index based) so accented
-                // text (á/é/ñ) at the window edge never panics via a byte-boundary slice.
-                let match_context = crate::mcp::tools::snippet(&transcript, query);
-                TranscriptSearchResult {
-                    id,
-                    title,
-                    match_context,
-                    timestamp,
-                }
-            })
-            .collect();
+        let mut seen = std::collections::HashSet::new();
+        let mut results = Vec::new();
+        for (id, title, match_context, timestamp) in rows {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            results.push(TranscriptSearchResult {
+                id,
+                title,
+                match_context,
+                timestamp,
+            });
+            if results.len() >= 100 {
+                break;
+            }
+        }
 
         Ok(results)
     }
@@ -450,7 +458,6 @@ impl TranscriptsRepository {
 mod tests {
     use super::*;
     use crate::database::test_support::migrated_pool;
-    use sqlx::sqlite::SqlitePoolOptions;
 
     async fn insert_meeting(pool: &SqlitePool, id: &str) {
         sqlx::query(
@@ -587,50 +594,52 @@ mod tests {
         assert!(!missing, "updating a non-existent segment returns false");
     }
 
-    async fn test_pool() -> SqlitePool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        for ddl in [
-            "CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT, deleted_at TEXT)",
-            "CREATE TABLE transcripts (id TEXT, meeting_id TEXT, transcript TEXT, timestamp TEXT)",
-        ] {
-            sqlx::query(ddl).execute(&pool).await.unwrap();
-        }
-        pool
-    }
-
-    /// Regression: a transcript full of accented (multi-byte) text must not panic
-    /// the search command. The previous byte-slicing helper crashed whenever an
-    /// accented char straddled the ±100 window; snippet() is char-index safe.
+    /// Accented (multi-byte) content must search cleanly (the old byte-slice
+    /// snippet panicked on a char straddling the window). Now via FTS5, which is
+    /// UTF-8 safe and diacritic-insensitive — the un-accented query finds it.
     #[tokio::test]
     async fn search_transcripts_is_utf8_safe_for_spanish() {
-        let pool = test_pool().await;
-        // Long accented transcript so the match sits >100 chars from the start,
-        // forcing the context window to slice inside multi-byte territory.
+        let pool = migrated_pool().await;
+        // Long accented transcript so the match sits far from the start.
         let transcript = format!(
             "{}reunión de mañana con el equipo español{}",
             "é".repeat(150),
             "ñ".repeat(150)
         );
-        sqlx::query("INSERT INTO meetings (id, title) VALUES ('m1', 'Reunión')")
-            .execute(&pool)
-            .await
-            .unwrap();
+        insert_meeting(&pool, "m1").await;
         sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('t1', 'm1', ?, '2026-07-11')")
             .bind(&transcript)
             .execute(&pool)
             .await
             .unwrap();
 
-        // Must return Ok (not panic/hang) and find the match.
-        let results = TranscriptsRepository::search_transcripts(&pool, "español")
+        // Diacritic-insensitive: "espanol" (no accent) finds "español".
+        let results = TranscriptsRepository::search_transcripts(&pool, "espanol")
             .await
             .expect("search must not error");
         assert_eq!(results.len(), 1);
         assert!(results[0].match_context.contains("español"));
+    }
+
+    /// FTS search spans every content source, not just transcripts: a meeting
+    /// whose only content is in its NOTES is found, and diacritics fold.
+    #[tokio::test]
+    async fn search_matches_notes_and_folds_diacritics() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1").await; // no transcript for m1
+        sqlx::query(
+            "INSERT INTO meeting_notes (meeting_id, notes_markdown, created_at, updated_at) \
+             VALUES ('m1', 'Notes about the café budget', datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let results = TranscriptsRepository::search_transcripts(&pool, "cafe")
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1, "note content is searchable, diacritic-insensitive");
+        assert_eq!(results[0].id, "m1");
     }
 
     /// Soft-deleted (trashed) meetings must not leak into transcript search,

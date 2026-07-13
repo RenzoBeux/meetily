@@ -71,7 +71,7 @@ mod tests {
             );
         }
 
-        for table in ["meeting_notes", "chat_messages"] {
+        for table in ["meeting_notes", "chat_messages", "search_index"] {
             let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
                 .fetch_one(&pool)
                 .await
