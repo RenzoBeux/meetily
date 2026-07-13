@@ -755,6 +755,9 @@ pub fn run() {
             audio::import::is_import_in_progress_command,
             // Markdown export
             export::export_meeting_markdown,
+            export::export_all_markdown,
+            database::backup_commands::db_backup_now,
+            database::backup_commands::db_list_backups,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

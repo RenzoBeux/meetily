@@ -18,6 +18,7 @@ import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useImportDialog } from '@/contexts/ImportDialogContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { GlobalEgressIndicator } from '@/components/GlobalEgressIndicator';
+import { groupMeetingsByDate } from '@/lib/meetingGrouping';
 
 import {
   Dialog,
@@ -769,7 +770,14 @@ const Sidebar: React.FC = () => {
                   .filter(item => item.type === 'folder' && expandedFolders.has(item.id) && item.children)
                   .map(item => (
                     <div key={`${item.id}-children`} className="mx-3">
-                      {item.children!.map(child => renderItem(child, 1))}
+                      {groupMeetingsByDate(item.children ?? []).map(group => (
+                        <div key={group.key}>
+                          <div className="sticky top-0 z-[5] bg-card/95 backdrop-blur px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/60">
+                            {group.label}
+                          </div>
+                          {group.items.map(child => renderItem(child, 1))}
+                        </div>
+                      ))}
                     </div>
                   ))}
               </div>

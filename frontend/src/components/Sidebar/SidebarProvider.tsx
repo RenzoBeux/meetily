@@ -11,11 +11,14 @@ interface SidebarItem {
   title: string;
   type: 'folder' | 'file';
   children?: SidebarItem[];
+  createdAt?: string;
 }
 
 export interface CurrentMeeting {
   id: string;
   title: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 // Search result type for transcript search
@@ -80,10 +83,12 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   // Extract fetchMeetings as a reusable function
   const fetchMeetings = React.useCallback(async () => {
     try {
-      const meetings = await invoke('api_get_meetings') as Array<{ id: string, title: string }>;
+      const meetings = await invoke('api_get_meetings') as Array<{ id: string, title: string, created_at: string, updated_at: string }>;
       const transformedMeetings = meetings.map((meeting: any) => ({
         id: meeting.id,
-        title: meeting.title
+        title: meeting.title,
+        createdAt: meeting.created_at,
+        updatedAt: meeting.updated_at
       }));
       setMeetings(transformedMeetings);
     } catch (error) {
@@ -102,7 +107,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       title: 'Meeting Notes',
       type: 'folder' as const,
       children: [
-        ...meetings.map(meeting => ({ id: meeting.id, title: meeting.title, type: 'file' as const }))
+        ...meetings.map(meeting => ({ id: meeting.id, title: meeting.title, type: 'file' as const, createdAt: meeting.createdAt }))
       ]
     },
   ];

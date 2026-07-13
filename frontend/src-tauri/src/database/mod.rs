@@ -1,3 +1,4 @@
+pub mod backup_commands;
 pub mod commands;
 pub mod manager;
 pub mod models;
