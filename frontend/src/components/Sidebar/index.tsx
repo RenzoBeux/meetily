@@ -41,6 +41,9 @@ interface SidebarItem {
   title: string;
   type: 'folder' | 'file';
   children?: SidebarItem[];
+  // Populated for file items from the meeting's created_at (SidebarProvider).
+  // Required by groupMeetingsByDate<T extends { createdAt?: string | null }>.
+  createdAt?: string;
 }
 
 const Sidebar: React.FC = () => {
