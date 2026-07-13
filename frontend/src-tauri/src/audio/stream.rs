@@ -472,6 +472,12 @@ impl AudioStreamManager {
     pub fn has_active_streams(&self) -> bool {
         self.microphone_stream.is_some() || self.system_stream.is_some()
     }
+
+    /// Whether the system (loopback) stream is active. Used to detect a mic-only
+    /// fallback when a system device was requested but its stream failed to start.
+    pub fn system_stream_active(&self) -> bool {
+        self.system_stream.is_some()
+    }
 }
 
 impl Drop for AudioStreamManager {

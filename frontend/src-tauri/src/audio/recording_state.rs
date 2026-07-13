@@ -124,6 +124,11 @@ pub struct RecordingState {
     // Pause time tracking
     pause_start: Mutex<Option<Instant>>,
     total_pause_duration: Mutex<std::time::Duration>,
+
+    // Latest per-device loudness (RMS stored as f32 bits) for the recording HUD level
+    // meters and the silence watchdog. Lock-free; published by the pipeline per chunk.
+    latest_mic_rms: AtomicU32,
+    latest_sys_rms: AtomicU32,
 }
 
 impl RecordingState {
@@ -145,7 +150,26 @@ impl RecordingState {
             recording_start: Mutex::new(None),
             pause_start: Mutex::new(None),
             total_pause_duration: Mutex::new(std::time::Duration::ZERO),
+            latest_mic_rms: AtomicU32::new(0),
+            latest_sys_rms: AtomicU32::new(0),
         })
+    }
+
+    /// Publish this device's latest RMS loudness (called from the pipeline per chunk).
+    pub fn set_level(&self, device_type: &DeviceType, rms: f32) {
+        let bits = rms.to_bits();
+        match device_type {
+            DeviceType::Microphone => self.latest_mic_rms.store(bits, Ordering::Relaxed),
+            DeviceType::System => self.latest_sys_rms.store(bits, Ordering::Relaxed),
+        }
+    }
+
+    /// Latest (mic_rms, system_rms) for the HUD level meters / silence watchdog.
+    pub fn get_levels(&self) -> (f32, f32) {
+        (
+            f32::from_bits(self.latest_mic_rms.load(Ordering::Relaxed)),
+            f32::from_bits(self.latest_sys_rms.load(Ordering::Relaxed)),
+        )
     }
 
     // Recording control
@@ -433,6 +457,8 @@ impl Default for RecordingState {
             recording_start: Mutex::new(None),
             pause_start: Mutex::new(None),
             total_pause_duration: Mutex::new(std::time::Duration::ZERO),
+            latest_mic_rms: AtomicU32::new(0),
+            latest_sys_rms: AtomicU32::new(0),
         }
     }
 }

@@ -555,6 +555,14 @@ impl AudioCapture {
         //     }
         // }
 
+        // Publish this device's live loudness (RMS) so the recording HUD shows a REAL
+        // level meter instead of a fake waveform, and so the silence watchdog can tell
+        // a live-but-quiet stream from a dead one. Cheap: one pass + one atomic store.
+        if !mono_data.is_empty() {
+            let rms = (mono_data.iter().map(|&x| x * x).sum::<f32>() / mono_data.len() as f32).sqrt();
+            self.state.set_level(&self.device_type, rms);
+        }
+
         // Use global recording timestamp for proper synchronization
         let timestamp = self.state.get_recording_duration().unwrap_or(0.0);
 

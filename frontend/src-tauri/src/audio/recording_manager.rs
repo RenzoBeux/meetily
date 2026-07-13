@@ -641,6 +641,11 @@ impl RecordingManager {
     pub fn get_state(&self) -> &Arc<RecordingState> {
         &self.state
     }
+
+    /// Whether the system (loopback) stream is active — false means a mic-only fallback.
+    pub fn system_stream_active(&self) -> bool {
+        self.stream_manager.system_stream_active()
+    }
 }
 
 impl Default for RecordingManager {

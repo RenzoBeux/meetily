@@ -10,6 +10,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::task::JoinHandle;
 
@@ -104,6 +105,117 @@ fn make_error_callback<R: Runtime>(
                 let _ = app.emit("recording-stop-complete", true);
             });
         }
+    }
+}
+
+/// Per-recording supervisor: publishes REAL RMS level meters (`recording-levels`), drains
+/// device disconnect/reconnect events into Tauri events, and runs the silence watchdog.
+/// Exits when IS_RECORDING clears. Never holds the RECORDING_MANAGER std-mutex across an
+/// `.await` (reads levels + polls events synchronously, drops the guard, then emits).
+fn spawn_recording_supervisor<R: Runtime>(app: AppHandle<R>) {
+    tauri::async_runtime::spawn(async move {
+        const TICK: Duration = Duration::from_millis(100); // 10 Hz level meters
+        const DEVICE_POLL_EVERY: u32 = 8; // drain device events ~every 800ms
+        const SILENCE_THRESHOLD_SECS: u64 = 300; // 5 min
+        const NOISE_FLOOR: f32 = 0.001;
+        let mut tick: u32 = 0;
+        let mut last_signal = Instant::now();
+        let mut silence_warned = false;
+
+        loop {
+            if !IS_RECORDING.load(Ordering::SeqCst) {
+                break;
+            }
+            tick = tick.wrapping_add(1);
+
+            // Sync snapshot; guard dropped before any await/emit.
+            let (levels, events, is_paused) = {
+                let mut guard = RECORDING_MANAGER.lock().unwrap();
+                match guard.as_mut() {
+                    Some(m) => {
+                        let state = m.get_state();
+                        let levels = state.get_levels();
+                        let is_paused = state.is_paused();
+                        let mut events = Vec::new();
+                        if tick % DEVICE_POLL_EVERY == 0 {
+                            while let Some(ev) = m.poll_device_events() {
+                                events.push(DeviceEventResponse::from(ev));
+                            }
+                        }
+                        (Some(levels), events, is_paused)
+                    }
+                    None => (None, Vec::new(), false),
+                }
+            };
+
+            let (mic_rms, sys_rms) = match levels {
+                Some(l) => l,
+                None => {
+                    tokio::time::sleep(TICK).await;
+                    continue;
+                }
+            };
+
+            // Real level meter (replaces the fake Math.random() waveform).
+            let _ = app.emit(
+                "recording-levels",
+                serde_json::json!({ "mic_rms": mic_rms, "system_rms": sys_rms }),
+            );
+
+            // Device disconnect/reconnect events.
+            for ev in events {
+                let event_name = match &ev {
+                    DeviceEventResponse::DeviceDisconnected { .. } => "device-disconnected",
+                    DeviceEventResponse::DeviceReconnected { .. } => "device-reconnected",
+                    DeviceEventResponse::DeviceListChanged => "device-list-changed",
+                };
+                let _ = app.emit(event_name, ev);
+            }
+
+            // Silence watchdog: reset on real mic signal; warn once after the threshold.
+            // Catches the "dead mic records silence" case even when the device stays
+            // enumerated (so the device monitor never fires).
+            if mic_rms > NOISE_FLOOR {
+                last_signal = Instant::now();
+                silence_warned = false;
+            } else if !is_paused
+                && !silence_warned
+                && last_signal.elapsed() > Duration::from_secs(SILENCE_THRESHOLD_SECS)
+            {
+                silence_warned = true;
+                let _ = app.emit(
+                    "recording-silence-warning",
+                    serde_json::json!({ "minutes": SILENCE_THRESHOLD_SECS / 60 }),
+                );
+            }
+
+            tokio::time::sleep(TICK).await;
+        }
+    });
+}
+
+/// If a system device was requested but its loopback stream isn't active, warn the user
+/// that the recording is capturing microphone only (loopback setup failed silently).
+fn emit_system_audio_unavailable_if_needed<R: Runtime>(
+    app: &AppHandle<R>,
+    system_requested: bool,
+    device_name: Option<String>,
+) {
+    if !system_requested {
+        return;
+    }
+    let active = RECORDING_MANAGER
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|m| m.system_stream_active())
+        .unwrap_or(false);
+    if !active {
+        warn!("System audio stream did not start — recording microphone only");
+        let _ = app.emit(
+            "system-audio-unavailable",
+            serde_json::json!({ "device_name": device_name }),
+        );
     }
 }
 
@@ -374,6 +486,11 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // Set up error callback (surfaces errors + finalizes on a fatal error).
     manager.set_error_callback(make_error_callback(app.clone()));
 
+    // Note whether system audio was requested, so we can warn if it silently fell back
+    // to mic-only (loopback stream failed to start).
+    let system_requested = system_device.is_some();
+    let system_name_for_event = system_device.as_ref().map(|d| d.name.clone());
+
     // Start recording with resolved devices (replaces start_recording_with_defaults_and_auto_save call)
     let transcription_receiver = manager
         .start_recording(microphone_device, system_device, auto_save)
@@ -391,6 +508,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     IS_RECORDING.store(true, Ordering::SeqCst);
     FATAL_STOP_TRIGGERED.store(false, Ordering::SeqCst); // Reset fatal-stop guard
     reset_speech_detected_flag(); // Reset for new recording session
+    spawn_recording_supervisor(app.clone()); // real level meters + device events + silence watchdog
+    emit_system_audio_unavailable_if_needed(&app, system_requested, system_name_for_event);
 
     // Start optimized parallel transcription task and store handle
     let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
@@ -544,6 +663,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     // Set up error callback (surfaces errors + finalizes on a fatal error).
     manager.set_error_callback(make_error_callback(app.clone()));
 
+    let system_requested = system_device.is_some();
+    let system_name_for_event = system_device.as_ref().map(|d| d.name.clone());
+
     // Start recording with specified devices and auto_save setting
     let transcription_receiver = manager
         .start_recording(mic_device, system_device, auto_save)
@@ -561,6 +683,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     IS_RECORDING.store(true, Ordering::SeqCst);
     FATAL_STOP_TRIGGERED.store(false, Ordering::SeqCst); // Reset fatal-stop guard
     reset_speech_detected_flag(); // Reset for new recording session
+    spawn_recording_supervisor(app.clone()); // real level meters + device events + silence watchdog
+    emit_system_audio_unavailable_if_needed(&app, system_requested, system_name_for_event);
 
     // Start optimized parallel transcription task and store handle
     let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);

@@ -20,6 +20,7 @@ import { useFilesystemRecovery } from '@/hooks/useFilesystemRecovery';
 import { TranscriptRecovery } from '@/components/TranscriptRecovery';
 import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
+import { listen } from '@tauri-apps/api/event';
 import { useRouter } from 'next/navigation';
 
 const WAVEFORM_BAR_COUNT = 7;
@@ -231,16 +232,34 @@ export default function Home() {
     }
   };
 
+  // Drive the recording waveform from REAL mic/system loudness (recording-levels,
+  // ~10 Hz from the Rust supervisor) instead of fake Math.random() bars, so the meter
+  // tracks actual audio and flatlines on silence / a dead mic.
   useEffect(() => {
-    if (recordingState.isRecording) {
-      const interval = setInterval(() => {
-        setBarHeights(
-          Array.from({ length: WAVEFORM_BAR_COUNT }, () => Math.random() * 20 + 10 + 'px')
-        );
-      }, 300);
+    if (!recordingState.isRecording) return;
+    let mounted = true;
+    let unlisten: (() => void) | undefined;
 
-      return () => clearInterval(interval);
-    }
+    listen<{ mic_rms: number; system_rms: number }>('recording-levels', (event) => {
+      const rms = Math.max(event.payload.mic_rms ?? 0, (event.payload.system_rms ?? 0) * 0.7);
+      // Perceptual scaling (sqrt lifts quiet speech); clamp to a legible px range.
+      const scaled = Math.min(1, Math.sqrt(rms) * 3);
+      const px = 4 + Math.round(scaled * 24); // 4..28px
+      setBarHeights((prev) => {
+        const next = prev.slice(1);
+        next.push(px + 'px');
+        return next;
+      });
+    }).then((fn) => {
+      if (mounted) unlisten = fn;
+      else fn();
+    });
+
+    return () => {
+      mounted = false;
+      if (unlisten) unlisten();
+      setBarHeights(Array(WAVEFORM_BAR_COUNT).fill('4px')); // flatline on stop
+    };
   }, [recordingState.isRecording]);
 
   // Computed values using global status

@@ -318,6 +318,68 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           setSpeechDetected(true);
         });
 
+        // Continuous "speech detected" derived from REAL levels (self-clears after
+        // ~600ms of silence), so the badge reflects the current state, not a one-shot.
+        let speechDecay: ReturnType<typeof setTimeout> | null = null;
+        const levelsUnsubscribe = await listen<{ mic_rms: number; system_rms: number }>(
+          'recording-levels',
+          (event) => {
+            const rms = Math.max(event.payload.mic_rms ?? 0, (event.payload.system_rms ?? 0) * 0.7);
+            if (rms > 0.008) {
+              setSpeechDetected(true);
+              if (speechDecay) clearTimeout(speechDecay);
+              speechDecay = setTimeout(() => setSpeechDetected(false), 600);
+            }
+          }
+        );
+
+        // Device disconnect/reconnect banners (from the Rust recording supervisor).
+        const deviceDisconnectedUnsubscribe = await listen<{ device_name?: string; device_type?: string }>(
+          'device-disconnected',
+          (event) => {
+            const name = event.payload?.device_name || 'A device';
+            const isSystem = (event.payload?.device_type || '').toLowerCase().includes('system');
+            setDeviceError({
+              title: isSystem ? 'System audio disconnected' : 'Microphone disconnected',
+              message: `${name} was disconnected. Recording continues, but this source may be silent until it reconnects.`,
+            });
+          }
+        );
+        const deviceReconnectedUnsubscribe = await listen('device-reconnected', () => {
+          setDeviceError(null);
+          toast.success('Audio device reconnected', { id: 'device-reconnected', duration: 3000 });
+        });
+
+        // System audio couldn't be captured — recording is mic-only.
+        const systemAudioUnavailableUnsubscribe = await listen<{ device_name?: string }>(
+          'system-audio-unavailable',
+          (event) => {
+            setDeviceError({
+              title: 'System audio unavailable',
+              message: `Could not capture system audio${event.payload?.device_name ? ` from ${event.payload.device_name}` : ''}. Recording microphone only.`,
+            });
+          }
+        );
+
+        // Silence watchdog — likely a dead mic even if the device is still enumerated.
+        const silenceWarningUnsubscribe = await listen<{ minutes?: number }>(
+          'recording-silence-warning',
+          (event) => {
+            const mins = event.payload?.minutes ?? 5;
+            setDeviceError({
+              title: 'No speech detected',
+              message: `No speech has been detected for ${mins} minutes — is your microphone working?`,
+            });
+          }
+        );
+
+        // Clear the HUD state when the recording stops.
+        const recordingStoppedUnsubscribe = await listen('recording-stopped', () => {
+          if (speechDecay) clearTimeout(speechDecay);
+          setDeviceError(null);
+          setSpeechDetected(false);
+        });
+
         // Recording error listener - surfaces backend audio/persistence failures
         // (dead device, disk full, encode/finalize failure) that used to be log-only.
         // Payload is either a plain string (RecordingState error callback) or an
@@ -372,7 +434,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           transcriptErrorUnsubscribe,
           transcriptionErrorUnsubscribe,
           speechDetectedUnsubscribe,
-          recordingErrorUnsubscribe
+          levelsUnsubscribe,
+          deviceDisconnectedUnsubscribe,
+          deviceReconnectedUnsubscribe,
+          systemAudioUnavailableUnsubscribe,
+          silenceWarningUnsubscribe,
+          recordingStoppedUnsubscribe,
+          recordingErrorUnsubscribe,
+          () => { if (speechDecay) clearTimeout(speechDecay); },
         ];
         console.log('Recording event listeners set up successfully');
       } catch (error) {
@@ -555,6 +624,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         {isValidatingModel && (
           <div className="text-xs text-muted-foreground text-center mt-2">
             Validating speech recognition...
+          </div>
+        )}
+
+        {/* Live "speech detected" badge (self-clears after ~600ms of silence) */}
+        {speechDetected && (
+          <div className="flex items-center justify-center gap-1.5 text-xs text-success mt-2">
+            <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
+            Speech detected
           </div>
         )}
 
