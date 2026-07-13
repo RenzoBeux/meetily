@@ -418,39 +418,39 @@ impl TranscriptsRepository {
             return Ok(Vec::new());
         }
 
-        // Over-fetch (400) so per-meeting dedup can still surface up to 100 meetings.
+        // Group to one row per meeting (its best-ranked match) IN SQL, so a meeting
+        // with many matching segments can't crowd out other meetings from the top 100.
+        // rank/snippet() are only valid in the direct MATCH query, so they're computed
+        // in the innermost subquery (aliased r/ctx); the middle query numbers rows per
+        // meeting by rank, and the outer keeps each meeting's best row.
         let rows = sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT search_index.meeting_id, m.title, \
-                    snippet(search_index, 3, '', '', '…', 12), \
-                    m.created_at \
-             FROM search_index \
-             JOIN meetings m ON m.id = search_index.meeting_id \
-             WHERE search_index MATCH ? AND m.deleted_at IS NULL \
-             ORDER BY rank \
-             LIMIT 400",
+            "SELECT mid, title, ctx, created_at FROM ( \
+                 SELECT mid, title, ctx, created_at, r, \
+                        ROW_NUMBER() OVER (PARTITION BY mid ORDER BY r) AS rn \
+                 FROM ( \
+                     SELECT search_index.meeting_id AS mid, m.title AS title, \
+                            m.created_at AS created_at, \
+                            snippet(search_index, 3, '', '', '…', 12) AS ctx, \
+                            rank AS r \
+                     FROM search_index \
+                     JOIN meetings m ON m.id = search_index.meeting_id \
+                     WHERE search_index MATCH ? AND m.deleted_at IS NULL \
+                 ) \
+             ) WHERE rn = 1 ORDER BY r LIMIT 100",
         )
         .bind(&match_query)
         .fetch_all(pool)
         .await?;
 
-        let mut seen = std::collections::HashSet::new();
-        let mut results = Vec::new();
-        for (id, title, match_context, timestamp) in rows {
-            if !seen.insert(id.clone()) {
-                continue;
-            }
-            results.push(TranscriptSearchResult {
+        Ok(rows
+            .into_iter()
+            .map(|(id, title, match_context, timestamp)| TranscriptSearchResult {
                 id,
                 title,
                 match_context,
                 timestamp,
-            });
-            if results.len() >= 100 {
-                break;
-            }
-        }
-
-        Ok(results)
+            })
+            .collect())
     }
 }
 
@@ -640,6 +640,34 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 1, "note content is searchable, diacritic-insensitive");
         assert_eq!(results[0].id, "m1");
+    }
+
+    /// A meeting with many matching segments must contribute exactly one result
+    /// row and must not crowd other matching meetings out (grouped in SQL, not
+    /// over-fetch-then-dedup).
+    #[tokio::test]
+    async fn search_returns_one_row_per_meeting() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "big").await;
+        insert_meeting(&pool, "small").await;
+        for i in 0..50 {
+            sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES (?, 'big', 'the keyword appears here', '[00:00]')")
+                .bind(format!("b{i}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('s1','small','the keyword appears once','[00:00]')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let results = TranscriptsRepository::search_transcripts(&pool, "keyword")
+            .await
+            .unwrap();
+        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(results.len(), 2, "one row per meeting, got {ids:?}");
+        assert!(ids.contains(&"big") && ids.contains(&"small"));
     }
 
     /// Soft-deleted (trashed) meetings must not leak into transcript search,

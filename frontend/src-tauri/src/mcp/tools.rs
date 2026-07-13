@@ -470,35 +470,35 @@ async fn fts_search_rows(
     } else {
         ""
     };
-    // Over-fetch so per-meeting dedup can still yield up to `limit` distinct meetings.
+    // Group to one best-ranked row per meeting IN SQL (rank/snippet computed in the
+    // innermost MATCH query; ROW_NUMBER keeps each meeting's best row) so LIMIT
+    // counts distinct meetings, not per-segment rows.
     let sql = format!(
-        "SELECT search_index.meeting_id AS mid, m.title AS title, \
-                snippet(search_index, 3, '', '', '…', 12) AS ctx \
-         FROM search_index \
-         JOIN meetings m ON m.id = search_index.meeting_id \
-         WHERE search_index MATCH ? AND m.deleted_at IS NULL{tag_cond} \
-         ORDER BY rank \
-         LIMIT ?"
+        "SELECT mid, title, ctx FROM ( \
+             SELECT mid, title, ctx, r, \
+                    ROW_NUMBER() OVER (PARTITION BY mid ORDER BY r) AS rn \
+             FROM ( \
+                 SELECT search_index.meeting_id AS mid, m.title AS title, \
+                        snippet(search_index, 3, '', '', '…', 12) AS ctx, \
+                        rank AS r \
+                 FROM search_index \
+                 JOIN meetings m ON m.id = search_index.meeting_id \
+                 WHERE search_index MATCH ? AND m.deleted_at IS NULL{tag_cond} \
+             ) \
+         ) WHERE rn = 1 ORDER BY r LIMIT ?"
     );
     let mut q = sqlx::query(&sql).bind(&match_query);
     if let Some(t) = tag {
         q = q.bind(t);
     }
-    let rows = q.bind(limit.saturating_mul(4)).fetch_all(pool).await?;
+    let rows = q.bind(limit).fetch_all(pool).await?;
 
     let mut results: Vec<(String, String, String)> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for row in &rows {
         let id: String = row.try_get("mid")?;
-        if !seen.insert(id.clone()) {
-            continue;
-        }
         let title: String = row.try_get("title")?;
         let ctx: String = row.try_get("ctx")?;
         results.push((id, title, ctx));
-        if results.len() as i64 >= limit {
-            break;
-        }
     }
     Ok(results)
 }
