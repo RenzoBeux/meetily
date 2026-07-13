@@ -8,7 +8,7 @@ Companion to [`audit-2026-07-11.md`](audit-2026-07-11.md). It plans **only the w
 
 ## Implementation status — updated 2026-07-13 (READ THIS FIRST to continue)
 
-Delivered as **stacked branches / PRs** off `main` (each PR bases on the previous, so the tip branch contains everything). Every wave was verified: `cargo check` 0 errors, `cargo test --lib` green (227 → 240, +13 new tests), `tsc --noEmit` 0 errors. **Runtime audio/summary/recovery flows still need a manual app run to confirm** (can't be driven headlessly).
+Delivered as **stacked branches / PRs** off `main` (each PR bases on the previous, so the tip branch contains everything). Every wave verified: `cargo check` 0 errors, `cargo test --lib` green (227 → **~270**, +~30 new tests across waves 5C/6/3c) with the single pre-existing `test_vad_large_file_progress` failing (CI already `--skip`s it), `tsc --noEmit` 0 errors, `bun test` green. **Runtime audio/summary/recovery/DB/LLM flows still need a manual app run to confirm** (can't be driven headlessly); the deferred items below are exactly those where a blind change's failure mode exceeds the fix.
 
 | Wave | Status | Branch | PR |
 |---|---|---|---|
@@ -17,22 +17,29 @@ Delivered as **stacked branches / PRs** off `main` (each PR bases on the previou
 | 2 — filesystem recovery | ✅ shipped (5 tasks) | `feat/remediation-wave-2` | #3 → wave-1 |
 | 3a — recording safety (error-stop finalize + startup preflight) | ✅ shipped (2 tasks) | `feat/remediation-wave-3a` | #4 → wave-2 |
 | 3b — recording trust HUD (real levels, device banners, silence watchdog, speech badge, system-audio, + toast-flood hotfix) | ✅ shipped (~8 tasks) | `feat/remediation-wave-3b` | #5 → wave-3a |
-| **3c — audio-quality DSP** | ⏳ **not started** | — | — |
-| 4 — security & privacy (CSP/serverAddress cleanup, opener hardening, SHA-256 verify helper + hash-pinning ×5 downloaders, fs-scope, cloud/local egress indicator) | ✅ shipped (8 tasks; keychain 4.7/4.8 deferred) | `feat/remediation-wave-4` | #6 → wave-3b |
-| **5 — robustness debt (crash-safety, frontend bugs, tests)** | ⏳ **not started** | — | — |
-| **6 — product features** | ⏳ **not started** | — | — |
+| 4 — security & privacy (CSP/serverAddress, opener hardening, SHA-256 hash-pinning ×5 downloaders, fs-scope, cloud/local egress indicator) | ✅ shipped (8 tasks; keychain 4.7/4.8 deferred) | `feat/remediation-wave-4` | #6 → wave-3b |
+| 5B — frontend state bugs | ✅ shipped (6 of 7; `live-virtualization` deferred — CSS/visual QA) | `feat/remediation-wave-5b` | #7 → wave-4 |
+| 5C — tests & CI | ✅ shipped (6 test tasks + CI doc, +23 tests; `mcp-smoke`/`clippy-gate`/`lint-gate` documented-deferred) | `feat/remediation-wave-5c` | #8 → wave-5b |
+| 5A — Rust crash-safety | ✅ shipped (5 of 7; `transcripts-jsonl` + `bound-channels` deferred, `audio-ownership-thread` backlog) | `feat/remediation-wave-5a` | #9 → wave-5c |
+| 6 — product features | ✅ shipped (5 of 6 + backup half; `title-prompt` + DB-`restore` deferred) | `feat/remediation-wave-6` | #10 → wave-5a |
+| 3c — audio-quality DSP | ✅ shipped (`3C.2` tail-flush; `3C.1`/`3C.3` deferred — mic A/B) | `feat/remediation-wave-3c` | #11 → wave-6 |
 
 **Repo:** GitHub `RenzoBeux/murmur` (NOT the `gh` default `Zackriya-Solutions/meetily` — always pass `--repo RenzoBeux/murmur`). The base commits `99924d5`/`e1ad60c` and all wave branches were pushed there; `main` on origin is behind at `4aca29e`.
 
-**How to continue in a fresh session:** the tip branch `feat/remediation-wave-4` (PR #6 → wave-3b) has all shipped work. Start the next wave on a new branch stacked on it, keep the wave-by-wave + checkpoint cadence, PR into the previous wave branch, verify with `cargo check`/`cargo test`/`tsc`. Recommended next: **Wave 5C `ci-test-harness` first**, then Wave 5A/5B robustness, or **Wave 3c** audio-quality DSP (higher regression risk — wants a mic A/B test).
+**How to continue in a fresh session:** **all in-scope waves are shipped.** The tip branch `feat/remediation-wave-3c` (PR #11 → wave-6) contains everything; the PR chain is #6→#7→#8→#9→#10→#11, each based on the previous. What remains are the explicitly-deferred items below — each needs either a **manual app run** (audio/DB/recovery/LLM flows) or is an **XL/structural backlog** task. Verify any follow-up with `cargo check`/`cargo test`/`tsc`.
 
-**Still to implement (in-scope, per the wave sections below):**
-- **Wave 3c** — `vad-sinc-resample`, `ringbuffer-tail-flush`, `system-loudness-before-vad` (deferred from 3b: real-time audio, highest regression risk, wants a mic A/B test). *(zeropad-mic-system-desync stays P2-deferred.)*
-- ~~**Wave 4**~~ — ✅ shipped (PR #6). All 8 tasks: CSP/serverAddress cleanup, opener hardening, `download_integrity::verify_sha256` helper + hash-pinning across **5** downloaders (whisper/uv/diarization/parakeet/summary-GGUF, all pinned to immutable revisions; Parakeet v3 moved off the uncontrolled host to the HF mirror), fs-scope, cloud/local egress indicator. Keychain (4.7/4.8) stays in the deferred backlog. *Known limitation:* pre-existing on-disk models aren't retroactively re-hashed for summary/diarization/whisper (Parakeet does re-verify); a verify-on-load follow-up would close it.
-- **Wave 5** — 5A crash-safety (7 tasks, minus the XL `audio-ownership-thread`), 5B frontend bugs (7), 5C CI/tests (10).
-- **Wave 6** — 6 product tasks (created_at, dated sidebar, language pick, title prompt, backup/restore UI, bulk export). Tags + FTS5 are deferred backlog.
+**Deferred within shipped waves (need a manual app run to do safely — failure mode exceeds the fix):**
+- **5A.6 `transcripts-jsonl`** — jsonl-append durability write; changes the crash-recovery source (recovery-data-loss risk). *Perf fix, not a data-loss fix.*
+- **5A.7 `bound-audio-channels`** — bounding the realtime channel needs `try_send`/drop + backpressure tuning (audio-drop / pipeline-stall risk).
+- **5B.3 `live-virtualization-bounded-height`** — bounding the tanstack-virtual scroll element changes the live-transcript scroll model (would break `TranscriptContext` auto-scroll); CSS/visual QA. *Perf, not correctness.*
+- **6.4 `post-stop-title-prompt`** — AI title suggestion needs a live LLM provider.
+- **6.5 restore** — destructive DB-replace + `app.restart()` (backup + list *did* ship).
+- **3C.1 `vad-sinc-resample`** + **3C.3 `system-loudness-before-vad`** — real-time WER/VAD-gating changes; want a mic A/B. *(3C.2 tail-flush shipped; zeropad-mic-system-desync stays P2-deferred.)*
+- **5C.8 `ci-mcp-smoke-test`** (heavy process-spawn build) + **5C.9/5C.10 clippy/lint gate flips** (backlog-clearing / eslint not configured) — documented in CONTRIBUTING.md.
 
-**Deferred backlog (own passes — XL / schema migration / new dep):** `audio-ownership-thread` (then `auto-reconnect-backoff` + `windows-loopback-rebind`), `soft-delete-undo`, keychain, `meeting-tags`, FTS5.
+**Known limitation (Wave 4):** pre-existing on-disk models aren't retroactively re-hashed for summary/diarization/whisper (Parakeet *does* re-verify); a verify-on-load follow-up would close it.
+
+**Deferred backlog (own passes — XL / schema migration / new dep):** `audio-ownership-thread` (then `auto-reconnect-backoff` + `windows-loopback-rebind`), `soft-delete-undo`, keychain (4.7/4.8), `meeting-tags`, FTS5.
 
 **Documented follow-ups inside shipped waves:** Wave 1 — surface partial-coverage / chat-windowed truncation as **UI toasts** (needs a `SummaryOutcome` return-shape refactor; currently only logs). Wave 2 — richer `TranscriptRecovery` dialog integration (deduped startup toast is what shipped).
 
