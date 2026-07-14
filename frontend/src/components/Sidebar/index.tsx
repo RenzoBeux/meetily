@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, PanelLeftClose, PanelLeftOpen, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, List } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { ChevronDown, ChevronRight, File, Settings, PanelLeftClose, PanelLeftOpen, Calendar, Home, Trash2, Mic, Square, Plus, Pencil, NotebookPen, Upload, List } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { getVersion } from '@tauri-apps/api/app';
@@ -33,7 +33,6 @@ import { Button } from '../ui/button';
 import Info from '../Info';
 import { ComplianceNotification } from '../ComplianceNotification';
 import { Input } from '../ui/input';
-import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '../ui/input-group';
 
 interface SidebarItem {
   id: string;
@@ -55,9 +54,6 @@ const Sidebar: React.FC = () => {
     isCollapsed,
     toggleCollapse,
     handleRecordingToggle,
-    searchTranscripts,
-    searchResults,
-    isSearching,
     meetings,
     setMeetings,
     refetchMeetings
@@ -68,7 +64,6 @@ const Sidebar: React.FC = () => {
   const { openImportDialog } = useImportDialog();
   const { betaFeatures } = useConfig();
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
-  const [searchQuery, setSearchQuery] = useState<string>('');
   const [showModelSettings, setShowModelSettings] = useState(false);
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
     provider: 'ollama',
@@ -230,99 +225,6 @@ const Sidebar: React.FC = () => {
       setSettingsSaveSuccess(false);
     }
   };
-
-  // Debounce timer for the transcript search (avoids a backend query per keystroke).
-  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
-  }, []);
-
-  // Handle search input changes
-  const handleSearchChange = useCallback((value: string) => {
-    setSearchQuery(value); // keep the controlled input responsive
-
-    // Make sure the meetings folder is expanded when searching (do it immediately)
-    if (!expandedFolders.has('meetings')) {
-      const newExpanded = new Set(expandedFolders);
-      newExpanded.add('meetings');
-      setExpandedFolders(newExpanded);
-    }
-
-    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
-
-    // Empty query: reset immediately (also cancels any inflight search via the seq guard).
-    if (!value.trim()) {
-      void searchTranscripts('');
-      return;
-    }
-
-    searchDebounceRef.current = setTimeout(() => {
-      void searchTranscripts(value);
-    }, 250);
-  }, [expandedFolders, searchTranscripts]);
-
-  // Combine search results with sidebar items
-  const filteredSidebarItems = useMemo(() => {
-    if (!searchQuery.trim()) return sidebarItems;
-
-    // If we have search results, highlight matching meetings
-    if (searchResults.length > 0) {
-      // Get the IDs of meetings that matched in transcripts
-      const matchedMeetingIds = new Set(searchResults.map(result => result.id));
-
-      return sidebarItems
-        .map(folder => {
-          // Always include folders in the results
-          if (folder.type === 'folder') {
-            if (!folder.children) return folder;
-
-            // Filter children based on search results or title match
-            const filteredChildren = folder.children.filter(item => {
-              // Include if the meeting ID is in our search results
-              if (matchedMeetingIds.has(item.id)) return true;
-
-              // Or if the title matches the search query
-              return item.title.toLowerCase().includes(searchQuery.toLowerCase());
-            });
-
-            return {
-              ...folder,
-              children: filteredChildren
-            };
-          }
-
-          // For non-folder items, check if they match the search
-          return (matchedMeetingIds.has(folder.id) ||
-            folder.title.toLowerCase().includes(searchQuery.toLowerCase()))
-            ? folder : undefined;
-        })
-        .filter((item): item is SidebarItem => item !== undefined); // Type-safe filter
-    } else {
-      // Fall back to title-only filtering if no transcript results
-      return sidebarItems
-        .map(folder => {
-          // Always include folders in the results
-          if (folder.type === 'folder') {
-            if (!folder.children) return folder;
-
-            // Filter children based on search query
-            const filteredChildren = folder.children.filter(item =>
-              item.title.toLowerCase().includes(searchQuery.toLowerCase())
-            );
-
-            return {
-              ...folder,
-              children: filteredChildren
-            };
-          }
-
-          // For non-folder items, check if they match the search
-          return folder.title.toLowerCase().includes(searchQuery.toLowerCase()) ? folder : undefined;
-        })
-        .filter((item): item is SidebarItem => item !== undefined); // Type-safe filter
-    }
-  }, [sidebarItems, searchQuery, searchResults, expandedFolders]);
-
 
   const handleDelete = async (itemId: string) => {
     const deleted = meetings.find((m: CurrentMeeting) => m.id === itemId);
@@ -609,21 +511,11 @@ const Sidebar: React.FC = () => {
     );
   };
 
-  // Find matching transcript snippet for a meeting item
-  const findMatchingSnippet = (itemId: string) => {
-    if (!searchQuery.trim() || !searchResults.length) return null;
-    return searchResults.find(result => result.id === itemId);
-  };
-
   const renderItem = (item: SidebarItem, depth = 0) => {
     const isExpanded = expandedFolders.has(item.id);
     const paddingLeft = `${depth * 12 + 12}px`;
     const isActive = item.type === 'file' && currentMeeting?.id === item.id;
     const isMeetingItem = item.id.includes('-') && !item.id.startsWith('intro-call');
-
-    // Check if this item has a matching transcript snippet
-    const matchingResult = isMeetingItem ? findMatchingSnippet(item.id) : null;
-    const hasTranscriptMatch = !!matchingResult;
 
     if (isCollapsed) return null;
 
@@ -632,8 +524,7 @@ const Sidebar: React.FC = () => {
         <div
           className={`relative flex items-center transition-all duration-150 group ${item.type === 'folder' && depth === 0
             ? 'p-3 text-sm font-semibold h-10 mx-3 mt-3 rounded-lg'
-            : `px-3 py-2 my-0.5 rounded-md text-sm ${isActive ? 'bg-brand/10 text-foreground font-medium' :
-              hasTranscriptMatch ? 'bg-warning/10' : 'hover:bg-accent/60'
+            : `px-3 py-2 my-0.5 rounded-md text-sm ${isActive ? 'bg-brand/10 text-foreground font-medium' : 'hover:bg-accent/60'
             } cursor-pointer`
             }`}
           style={item.type === 'folder' && depth === 0 ? {} : { paddingLeft }}
@@ -668,9 +559,6 @@ const Sidebar: React.FC = () => {
                   <ChevronRight className="w-4 h-4 text-muted-foreground" />
                 )}
               </div>
-              {searchQuery && item.id === 'meetings' && isSearching && (
-                <span className="ml-2 text-xs text-brand animate-pulse">Searching...</span>
-              )}
             </>
           ) : (
             <div className="flex flex-col w-full">
@@ -710,13 +598,6 @@ const Sidebar: React.FC = () => {
                   </div>
                 )}
               </div>
-
-              {/* Show transcript match snippet if available */}
-              {hasTranscriptMatch && (
-                <div className="mt-1 ml-8 text-xs text-muted-foreground bg-warning/10 p-1.5 rounded border border-warning/20 line-clamp-2">
-                  <span className="font-medium text-warning">Match:</span> {matchingResult.matchContext}
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -744,56 +625,32 @@ const Sidebar: React.FC = () => {
         className={`h-full bg-card border-r border-border flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
           }`}
       >
-        {/* Header: collapse toggle + search. App branding lives in the window
-            titlebar, so the sidebar no longer repeats the Murmur wordmark. */}
-        {!isCollapsed && (
-          <div className="flex-shrink-0 p-3">
-            <div className="flex items-center justify-end mb-1">
-              <button
-                onClick={toggleCollapse}
-                aria-label="Collapse sidebar"
-                title="Collapse sidebar"
-                className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-              >
-                <PanelLeftClose className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="relative mb-1">
-              <InputGroup >
-                <InputGroupInput placeholder='Search meeting content...' value={searchQuery}
-                  onChange={(e) => handleSearchChange(e.target.value)}
-                />
-                <InputGroupAddon>
-                  <SearchIcon />
-                </InputGroupAddon>
-                {searchQuery &&
-                  <InputGroupAddon align={'inline-end'}>
-                    <InputGroupButton
-                      onClick={() => handleSearchChange('')}
-                    >
-                      <X />
-                    </InputGroupButton>
-                  </InputGroupAddon>
-                }
-              </InputGroup>
-            </div>
-          </div>
-        )}
-
         {/* Main content - scrollable area */}
         <div className="flex-1 flex flex-col min-h-0">
-          {/* Fixed navigation items */}
+          {/* Fixed navigation items. The collapse toggle rides at the right
+              edge of the Home row so it doesn't need a dedicated row, and the
+              window titlebar carries the app branding. Search lives on the
+              /meetings page now, so there's no sidebar search box. */}
           <div className="flex-shrink-0">
             {!isCollapsed && (
               <>
-                <div
-                  onClick={() => router.push('/')}
-                  className={`p-3 text-sm font-medium items-center h-10 flex mx-3 mt-3 rounded-lg cursor-pointer transition-colors ${pathname === '/' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-accent'
-                    }`}
-                >
-                  <Home className="w-4 h-4 mr-2" />
-                  <span>Home</span>
+                <div className="flex items-center gap-1 mx-3 mt-3">
+                  <div
+                    onClick={() => router.push('/')}
+                    className={`flex-1 min-w-0 p-3 text-sm font-medium items-center h-10 flex rounded-lg cursor-pointer transition-colors ${pathname === '/' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                      }`}
+                  >
+                    <Home className="w-4 h-4 mr-2" />
+                    <span>Home</span>
+                  </div>
+                  <button
+                    onClick={toggleCollapse}
+                    aria-label="Collapse sidebar"
+                    title="Collapse sidebar"
+                    className="shrink-0 p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                  >
+                    <PanelLeftClose className="w-5 h-5" />
+                  </button>
                 </div>
                 <div
                   onClick={() => router.push('/meetings')}
@@ -810,11 +667,11 @@ const Sidebar: React.FC = () => {
           {/* Content area */}
           <div className="flex-1 flex flex-col min-h-0">
             {renderCollapsedIcons()}
-            {/* Recent meetings (or search results). The full, date-grouped,
-                searchable list now lives on the /meetings page — the sidebar
-                keeps only a short "Recent" shortlist plus the live search. */}
+            {/* Recent meetings. The full, date-grouped, searchable list now
+                lives on the /meetings page — the sidebar keeps only a short
+                "Recent" shortlist with a "View all" link. */}
             {!isCollapsed && (() => {
-              const meetingsFolder = filteredSidebarItems.find(
+              const meetingsFolder = sidebarItems.find(
                 item => item.type === 'folder' && item.id === 'meetings'
               );
               // Real meeting items only (drop the "+ New Call" intro item).
@@ -822,44 +679,7 @@ const Sidebar: React.FC = () => {
                 child => !child.id.startsWith('intro-call')
               );
 
-              // SEARCH MODE — show every match, grouped by date, as before.
-              if (searchQuery.trim()) {
-                return (
-                  <>
-                    <div className="flex-shrink-0">
-                      <div className="flex items-center p-3 text-sm font-medium h-10 mx-3 mt-3 rounded-lg">
-                        <SearchIcon className="w-4 h-4 mr-2 text-muted-foreground" />
-                        <span className="text-muted-foreground">Search results</span>
-                        {isSearching && (
-                          <span className="ml-2 text-xs text-brand animate-pulse">Searching...</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
-                      {children.length === 0 ? (
-                        !isSearching && (
-                          <div className="px-5 py-3 text-xs text-muted-foreground">
-                            No meetings match “{searchQuery}”.
-                          </div>
-                        )
-                      ) : (
-                        <div className="mx-3">
-                          {groupMeetingsByDate(children).map(group => (
-                            <div key={group.key}>
-                              <div className="sticky top-0 z-[5] bg-card/95 backdrop-blur px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/60">
-                                {group.label}
-                              </div>
-                              {group.items.map(child => renderItem(child, 1))}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </>
-                );
-              }
-
-              // RECENT MODE — newest ~5 meetings + a "View all" link to /meetings.
+              // Newest ~5 meetings + a "View all" link to /meetings.
               const recent = [...children]
                 .sort((a, b) => {
                   const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
