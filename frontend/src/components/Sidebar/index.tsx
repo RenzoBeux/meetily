@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, List } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, PanelLeftClose, PanelLeftOpen, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, List } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { getVersion } from '@tauri-apps/api/app';
@@ -30,7 +30,6 @@ import { VisuallyHidden } from "@/components/ui/visually-hidden"
 
 import { MessageToast } from '../MessageToast';
 import { Button } from '../ui/button';
-import Logo from '../Logo';
 import Info from '../Info';
 import { ComplianceNotification } from '../ComplianceNotification';
 import { Input } from '../ui/input';
@@ -476,7 +475,20 @@ const Sidebar: React.FC = () => {
     return (
       <TooltipProvider>
         <div className="flex flex-col items-center space-y-4 mt-4">
-          <Logo isCollapsed={isCollapsed} />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={toggleCollapse}
+                aria-label="Expand sidebar"
+                className="p-2 rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-colors duration-150"
+              >
+                <PanelLeftOpen className="w-5 h-5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>Expand sidebar</p>
+            </TooltipContent>
+          </Tooltip>
 
           <Tooltip>
             <TooltipTrigger asChild>
@@ -728,58 +740,46 @@ const Sidebar: React.FC = () => {
         />
       )}
 
-      {/* Floating collapse button */}
-      <button
-        onClick={toggleCollapse}
-        className="absolute -right-6 top-20 z-50 p-1 bg-elevated text-muted-foreground hover:text-foreground hover:bg-accent rounded-full shadow-glass border border-border"
-        style={{ transform: 'translateX(50%)' }}
-      >
-        {isCollapsed ? (
-          <ChevronRightCircle className="w-6 h-6" />
-        ) : (
-          <ChevronLeftCircle className="w-6 h-6" />
-        )}
-      </button>
-
       <div
         className={`h-full bg-card border-r border-border flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
           }`}
       >
-        {/*  Header with traffic light spacing */}
-        <div className="flex-shrink-0 h-22 flex items-center">
+        {/* Header: collapse toggle + search. App branding lives in the window
+            titlebar, so the sidebar no longer repeats the Murmur wordmark. */}
+        {!isCollapsed && (
+          <div className="flex-shrink-0 p-3">
+            <div className="flex items-center justify-end mb-1">
+              <button
+                onClick={toggleCollapse}
+                aria-label="Collapse sidebar"
+                title="Collapse sidebar"
+                className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              >
+                <PanelLeftClose className="w-5 h-5" />
+              </button>
+            </div>
 
-          {/* Title container */}
-
-
-
-          <div className="flex-1">
-            {!isCollapsed && (
-              <div className="p-3">
-                <Logo isCollapsed={isCollapsed} />
-
-                <div className="relative mb-1">
-                  <InputGroup >
-                    <InputGroupInput placeholder='Search meeting content...' value={searchQuery}
-                      onChange={(e) => handleSearchChange(e.target.value)}
-                    />
-                    <InputGroupAddon>
-                      <SearchIcon />
-                    </InputGroupAddon>
-                    {searchQuery &&
-                      <InputGroupAddon align={'inline-end'}>
-                        <InputGroupButton
-                          onClick={() => handleSearchChange('')}
-                        >
-                          <X />
-                        </InputGroupButton>
-                      </InputGroupAddon>
-                    }
-                  </InputGroup>
-                </div>
-              </div>
-            )}
+            <div className="relative mb-1">
+              <InputGroup >
+                <InputGroupInput placeholder='Search meeting content...' value={searchQuery}
+                  onChange={(e) => handleSearchChange(e.target.value)}
+                />
+                <InputGroupAddon>
+                  <SearchIcon />
+                </InputGroupAddon>
+                {searchQuery &&
+                  <InputGroupAddon align={'inline-end'}>
+                    <InputGroupButton
+                      onClick={() => handleSearchChange('')}
+                    >
+                      <X />
+                    </InputGroupButton>
+                  </InputGroupAddon>
+                }
+              </InputGroup>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Main content - scrollable area */}
         <div className="flex-1 flex flex-col min-h-0">
