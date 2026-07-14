@@ -98,6 +98,10 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     setTranscript(''); // Clear any previous transcript
     setSpeechDetected(false); // Reset speech detection on new recording
 
+    // Instant feedback: flip the button into its spinner/disabled state the moment
+    // it's clicked. Without this the (potentially multi-second) model check + backend
+    // start ran with the button looking idle — reading as a freeze.
+    setIsStarting(true);
     try {
       // Call the validation callback which will:
       // 1. Check if model is ready
@@ -138,6 +142,10 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           message: 'Unable to start recording. Please check your audio device settings and try again.'
         });
       }
+    } finally {
+      // RecordingStateContext drives the RECORDING state on success; either way,
+      // release the local "starting" spinner.
+      setIsStarting(false);
     }
   }, [onRecordingStart, isStarting, isValidatingModel, selectedDevices, meetingName, isRecording]);
 
@@ -532,7 +540,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                             : 'bg-primary text-primary-foreground hover:bg-brand-hover shadow-glow'
                             } rounded-full transition-colors relative`}
                         >
-                          {isValidatingModel ? (
+                          {isStarting || isValidatingModel ? (
                             <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-current"></div>
                           ) : (
                             <Mic size={20} />
