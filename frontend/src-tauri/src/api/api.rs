@@ -759,6 +759,67 @@ pub async fn api_list_all_tags<R: Runtime>(
         .map_err(|e| format!("Failed to list tags: {}", e))
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TrashedMeeting {
+    pub id: String,
+    pub title: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "deletedAt")]
+    pub deleted_at: String,
+}
+
+/// Trashed (soft-deleted) meetings for the Trash view, most-recently-deleted first.
+#[tauri::command]
+pub async fn api_list_trashed_meetings<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    _auth_token: Option<String>,
+) -> Result<Vec<TrashedMeeting>, String> {
+    let pool = state.db_manager.pool();
+    MeetingsRepository::list_trashed(pool)
+        .await
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(id, title, created_at, deleted_at)| TrashedMeeting {
+                    id,
+                    title,
+                    created_at,
+                    deleted_at,
+                })
+                .collect()
+        })
+        .map_err(|e| format!("Failed to list trashed meetings: {}", e))
+}
+
+/// Permanently delete a trashed meeting and all its data (irreversible). Backs the
+/// Trash view's "Delete permanently" action.
+#[tauri::command]
+pub async fn api_purge_meeting<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    auth_token: Option<String>,
+) -> Result<serde_json::Value, String> {
+    log_info!(
+        "api_purge_meeting called for meeting_id(native): {}, auth_token: {}",
+        meeting_id,
+        auth_token.is_some()
+    );
+    let pool = state.db_manager.pool();
+    match MeetingsRepository::purge_meeting(pool, &meeting_id).await {
+        Ok(true) => Ok(serde_json::json!({
+            "status": "success",
+            "message": "Meeting permanently deleted"
+        })),
+        Ok(false) => Err(format!("Meeting not found: {}", meeting_id)),
+        Err(e) => {
+            log_error!("Error purging meeting {}: {}", meeting_id, e);
+            Err(format!("Failed to permanently delete meeting: {}", e))
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn api_get_meeting<R: Runtime>(
     _app: AppHandle<R>,

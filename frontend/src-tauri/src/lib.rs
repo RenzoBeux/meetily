@@ -638,6 +638,8 @@ pub fn run() {
             api::api_test_pyannote_key,
             api::api_delete_meeting,
             api::api_restore_meeting,
+            api::api_list_trashed_meetings,
+            api::api_purge_meeting,
             api::api_add_meeting_tag,
             api::api_remove_meeting_tag,
             api::api_get_meeting_tags,

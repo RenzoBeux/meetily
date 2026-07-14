@@ -105,6 +105,14 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     fetchMeetings();
   }, [fetchMeetings]);
 
+  // Refresh the meeting list when another view mutates meetings (e.g. restoring
+  // from the Trash page), so the change shows without a reload/navigation.
+  useEffect(() => {
+    const handler = () => { fetchMeetings(); };
+    window.addEventListener('meetings-changed', handler);
+    return () => window.removeEventListener('meetings-changed', handler);
+  }, [fetchMeetings]);
+
   const baseItems: SidebarItem[] = [
     {
       id: 'meetings',

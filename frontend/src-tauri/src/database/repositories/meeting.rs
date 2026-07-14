@@ -19,6 +19,21 @@ impl MeetingsRepository {
         Ok(meetings)
     }
 
+    /// Trashed (soft-deleted) meetings for the Trash view: `(id, title, created_at,
+    /// deleted_at)`, most-recently-deleted first. `deleted_at` lets the UI show how
+    /// long until the 30-day retention purge removes each one.
+    pub async fn list_trashed(
+        pool: &SqlitePool,
+    ) -> Result<Vec<(String, String, String, String)>, SqlxError> {
+        let rows = sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT id, title, created_at, deleted_at FROM meetings \
+             WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC",
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// All non-empty `folder_path`s, used by the filesystem recovery scan to dedup
     /// interrupted-recording folders against meetings already saved to SQLite.
     /// Intentionally includes trashed (soft-deleted) meetings: their folders are
@@ -704,6 +719,27 @@ mod tests {
             matches!(err, sqlx::Error::RowNotFound),
             "get_meeting on a missing id returns RowNotFound, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn list_trashed_returns_only_trashed_newest_first() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "live", "Live").await;
+        insert_meeting(&pool, "t_old", "Old").await;
+        insert_meeting(&pool, "t_new", "New").await;
+
+        assert!(MeetingsRepository::delete_meeting(&pool, "t_old").await.unwrap());
+        sqlx::query("UPDATE meetings SET deleted_at = datetime('now','-2 days') WHERE id='t_old'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(MeetingsRepository::delete_meeting(&pool, "t_new").await.unwrap());
+
+        let trashed = MeetingsRepository::list_trashed(&pool).await.unwrap();
+        let ids: Vec<&str> = trashed.iter().map(|(id, ..)| id.as_str()).collect();
+        assert_eq!(ids, vec!["t_new", "t_old"], "only trashed, newest-deleted first");
+        // Each row carries a non-empty deleted_at for the retention countdown.
+        assert!(trashed.iter().all(|(_, _, _, del)| !del.is_empty()));
     }
 
     #[tokio::test]
