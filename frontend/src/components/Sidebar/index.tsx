@@ -786,13 +786,24 @@ const Sidebar: React.FC = () => {
           {/* Fixed navigation items */}
           <div className="flex-shrink-0">
             {!isCollapsed && (
-              <div
-                onClick={() => router.push('/')}
-                className="p-3 text-sm font-medium items-center text-muted-foreground hover:text-foreground hover:bg-accent h-10 flex mx-3 mt-3 rounded-lg cursor-pointer transition-colors"
-              >
-                <Home className="w-4 h-4 mr-2" />
-                <span>Home</span>
-              </div>
+              <>
+                <div
+                  onClick={() => router.push('/')}
+                  className={`p-3 text-sm font-medium items-center h-10 flex mx-3 mt-3 rounded-lg cursor-pointer transition-colors ${pathname === '/' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                    }`}
+                >
+                  <Home className="w-4 h-4 mr-2" />
+                  <span>Home</span>
+                </div>
+                <div
+                  onClick={() => router.push('/meetings')}
+                  className={`p-3 text-sm font-medium items-center h-10 flex mx-3 mt-1 rounded-lg cursor-pointer transition-colors ${pathname === '/meetings' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                    }`}
+                >
+                  <List className="w-4 h-4 mr-2" />
+                  <span>Meetings</span>
+                </div>
+              </>
             )}
           </div>
 
@@ -875,8 +886,18 @@ const Sidebar: React.FC = () => {
             )}
 
             <button
+              onClick={() => router.push('/trash')}
+              className={`w-full flex items-center justify-center px-3 py-1.5 mt-1 text-sm font-medium rounded-lg transition-colors ${pathname === '/trash' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                }`}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              <span>Trash</span>
+            </button>
+
+            <button
               onClick={() => router.push('/settings')}
-              className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent rounded-lg transition-colors"
+              className={`w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium rounded-lg transition-colors ${pathname === '/settings' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                }`}
             >
               <Settings className="w-4 h-4 mr-2" />
               <span>Settings</span>
