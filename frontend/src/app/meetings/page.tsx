@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useRouter } from 'next/navigation';
 import { Calendar, Clock, ListVideo, Search, X } from 'lucide-react';
@@ -10,6 +10,20 @@ interface MeetingRow {
   id: string;
   title: string;
   createdAt?: string;
+}
+
+// Shape returned by the FTS5-backed `api_search_transcripts` command.
+interface TranscriptSearchResult {
+  id: string;
+  title: string;
+  matchContext: string;
+  timestamp: string;
+}
+
+// A meeting that matched a search, with the reason it matched.
+interface SearchHit extends MeetingRow {
+  // The transcript snippet around the match, if the match came from content.
+  matchContext?: string;
 }
 
 function parseDate(s?: string): Date | null {
@@ -32,6 +46,9 @@ export default function MeetingsPage() {
   const router = useRouter();
   const [meetings, setMeetings] = useState<MeetingRow[] | null>(null);
   const [query, setQuery] = useState('');
+  // Transcript-content matches from the backend FTS index (id -> snippet).
+  const [contentMatches, setContentMatches] = useState<Map<string, string>>(new Map());
+  const [isSearching, setIsSearching] = useState(false);
 
   useEffect(() => {
     invoke<Array<{ id: string; title: string; created_at: string }>>('api_get_meetings')
@@ -44,13 +61,61 @@ export default function MeetingsPage() {
       });
   }, []);
 
+  // Debounced transcript search. A monotonically-increasing seq guards against
+  // out-of-order responses clobbering the latest query's results.
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seqRef = useRef(0);
+  useEffect(() => {
+    const q = query.trim();
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (!q) {
+      seqRef.current += 1; // cancel any inflight search
+      setContentMatches(new Map());
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    const mySeq = ++seqRef.current;
+    debounceRef.current = setTimeout(() => {
+      invoke<TranscriptSearchResult[]>('api_search_transcripts', { query: q })
+        .then((results) => {
+          if (mySeq !== seqRef.current) return; // stale response
+          const map = new Map<string, string>();
+          for (const r of results) if (!map.has(r.id)) map.set(r.id, r.matchContext);
+          setContentMatches(map);
+        })
+        .catch((e) => {
+          if (mySeq !== seqRef.current) return;
+          console.error('Transcript search failed:', e);
+          setContentMatches(new Map());
+        })
+        .finally(() => {
+          if (mySeq === seqRef.current) setIsSearching(false);
+        });
+    }, 250);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query]);
+
   const q = query.trim().toLowerCase();
-  const filtered = meetings
-    ? q
-      ? meetings.filter((m) => m.title.toLowerCase().includes(q))
-      : meetings
-    : null;
-  const groups = filtered ? groupMeetingsByDate(filtered) : [];
+  const searching = q.length > 0;
+
+  // When searching, a meeting is a hit if its title matches OR its transcript
+  // content matched in the FTS index. Content matches carry a snippet.
+  const hits: SearchHit[] | null =
+    meetings === null
+      ? null
+      : searching
+        ? meetings
+            .filter((m) => m.title.toLowerCase().includes(q) || contentMatches.has(m.id))
+            .map((m) => ({ ...m, matchContext: contentMatches.get(m.id) }))
+        : meetings;
+
+  const groups = !searching && hits ? groupMeetingsByDate(hits) : [];
 
   return (
     <div className="h-[calc(100vh-var(--titlebar-height))] bg-background flex flex-col">
@@ -61,19 +126,19 @@ export default function MeetingsPage() {
             <h1 className="text-3xl font-bold">Meetings</h1>
             {meetings && (
               <span className="text-sm text-muted-foreground ml-1">
-                {q ? `${filtered!.length} of ${meetings.length}` : meetings.length}
+                {searching ? `${hits!.length} of ${meetings.length}` : meetings.length}
                 {' '}
-                {(q ? filtered!.length : meetings.length) === 1 ? 'meeting' : 'meetings'}
+                {(searching ? hits!.length : meetings.length) === 1 ? 'meeting' : 'meetings'}
               </span>
             )}
           </div>
-          <div className="relative sm:ml-auto w-full sm:w-64">
+          <div className="relative sm:ml-auto w-full sm:w-72">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
             <input
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Filter by title…"
+              placeholder="Search titles & transcripts…"
               className="w-full rounded-lg border border-border bg-card pl-9 pr-9 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/40"
             />
             {query && (
@@ -99,12 +164,24 @@ export default function MeetingsPage() {
               <p className="text-lg">No meetings yet</p>
               <p className="text-sm">Start a recording and it will show up here.</p>
             </div>
-          ) : filtered!.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground">
-              <Search className="w-10 h-10 mb-3 opacity-40" />
-              <p className="text-lg">No matches</p>
-              <p className="text-sm">No meetings match “{query}”.</p>
-            </div>
+          ) : searching ? (
+            // Search results: a flat list ranked by the backend, with the
+            // transcript snippet shown when the match came from content.
+            hits!.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground">
+                <Search className="w-10 h-10 mb-3 opacity-40" />
+                <p className="text-lg">{isSearching ? 'Searching…' : 'No matches'}</p>
+                {!isSearching && <p className="text-sm">Nothing matches “{query}” in titles or transcripts.</p>}
+              </div>
+            ) : (
+              <ul className="space-y-1.5">
+                {hits!.map((m) => (
+                  <li key={m.id}>
+                    <MeetingCard m={m} onClick={() => router.push(`/meeting-details?id=${m.id}`)} />
+                  </li>
+                ))}
+              </ul>
+            )
           ) : (
             <div className="space-y-6">
               {groups.map((group) => (
@@ -115,24 +192,7 @@ export default function MeetingsPage() {
                   <ul className="mt-1 space-y-1.5">
                     {group.items.map((m) => (
                       <li key={m.id}>
-                        <button
-                          onClick={() => router.push(`/meeting-details?id=${m.id}`)}
-                          className="w-full text-left rounded-lg border border-border bg-card hover:bg-accent transition-colors p-4 flex items-center gap-4"
-                        >
-                          <div className="flex-1 min-w-0">
-                            <p className="font-medium truncate">{m.title}</p>
-                          </div>
-                          <div className="shrink-0 flex items-center gap-4 text-xs text-muted-foreground">
-                            <span className="flex items-center gap-1.5">
-                              <Calendar className="w-3.5 h-3.5" />
-                              {fmtDate(m.createdAt)}
-                            </span>
-                            <span className="flex items-center gap-1.5">
-                              <Clock className="w-3.5 h-3.5" />
-                              {fmtTime(m.createdAt)}
-                            </span>
-                          </div>
-                        </button>
+                        <MeetingCard m={m} onClick={() => router.push(`/meeting-details?id=${m.id}`)} />
                       </li>
                     ))}
                   </ul>
@@ -143,5 +203,35 @@ export default function MeetingsPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function MeetingCard({ m, onClick }: { m: SearchHit; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full text-left rounded-lg border border-border bg-card hover:bg-accent transition-colors p-4"
+    >
+      <div className="flex items-center gap-4">
+        <div className="flex-1 min-w-0">
+          <p className="font-medium truncate">{m.title}</p>
+        </div>
+        <div className="shrink-0 flex items-center gap-4 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <Calendar className="w-3.5 h-3.5" />
+            {fmtDate(m.createdAt)}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5" />
+            {fmtTime(m.createdAt)}
+          </span>
+        </div>
+      </div>
+      {m.matchContext && (
+        <div className="mt-2 text-xs text-muted-foreground bg-warning/10 border border-warning/20 rounded p-2 line-clamp-2">
+          <span className="font-medium text-warning">Match:</span> {m.matchContext}
+        </div>
+      )}
+    </button>
   );
 }
