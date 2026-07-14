@@ -810,44 +810,92 @@ const Sidebar: React.FC = () => {
           {/* Content area */}
           <div className="flex-1 flex flex-col min-h-0">
             {renderCollapsedIcons()}
-            {/* Meeting Notes folder header - fixed */}
-            {!isCollapsed && (
-              <div className="flex-shrink-0">
-                {filteredSidebarItems.filter(item => item.type === 'folder').map(item => (
-                  <div key={item.id}>
-                    <div
-                      className="flex items-center transition-all duration-150 p-3 text-sm font-medium h-10 mx-3 mt-3 rounded-lg"
-                    >
+            {/* Recent meetings (or search results). The full, date-grouped,
+                searchable list now lives on the /meetings page — the sidebar
+                keeps only a short "Recent" shortlist plus the live search. */}
+            {!isCollapsed && (() => {
+              const meetingsFolder = filteredSidebarItems.find(
+                item => item.type === 'folder' && item.id === 'meetings'
+              );
+              // Real meeting items only (drop the "+ New Call" intro item).
+              const children = (meetingsFolder?.children ?? []).filter(
+                child => !child.id.startsWith('intro-call')
+              );
+
+              // SEARCH MODE — show every match, grouped by date, as before.
+              if (searchQuery.trim()) {
+                return (
+                  <>
+                    <div className="flex-shrink-0">
+                      <div className="flex items-center p-3 text-sm font-medium h-10 mx-3 mt-3 rounded-lg">
+                        <SearchIcon className="w-4 h-4 mr-2 text-muted-foreground" />
+                        <span className="text-muted-foreground">Search results</span>
+                        {isSearching && (
+                          <span className="ml-2 text-xs text-brand animate-pulse">Searching...</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
+                      {children.length === 0 ? (
+                        !isSearching && (
+                          <div className="px-5 py-3 text-xs text-muted-foreground">
+                            No meetings match “{searchQuery}”.
+                          </div>
+                        )
+                      ) : (
+                        <div className="mx-3">
+                          {groupMeetingsByDate(children).map(group => (
+                            <div key={group.key}>
+                              <div className="sticky top-0 z-[5] bg-card/95 backdrop-blur px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/60">
+                                {group.label}
+                              </div>
+                              {group.items.map(child => renderItem(child, 1))}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              }
+
+              // RECENT MODE — newest ~5 meetings + a "View all" link to /meetings.
+              const recent = [...children]
+                .sort((a, b) => {
+                  const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                  const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                  return tb - ta;
+                })
+                .slice(0, 5);
+
+              return (
+                <>
+                  <div className="flex-shrink-0 flex items-center justify-between pl-3 pr-4 mt-3 h-10">
+                    <div className="flex items-center text-sm font-medium">
                       <NotebookPen className="w-4 h-4 mr-2 text-muted-foreground" />
-                      <span className="text-muted-foreground">{item.title}</span>
-                      {searchQuery && item.id === 'meetings' && isSearching && (
-                        <span className="ml-2 text-xs text-brand animate-pulse">Searching...</span>
+                      <span className="text-muted-foreground">Recent</span>
+                    </div>
+                    <button
+                      onClick={() => router.push('/meetings')}
+                      className="text-xs font-medium text-brand hover:underline"
+                    >
+                      View all →
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
+                    <div className="mx-3">
+                      {recent.length === 0 ? (
+                        <div className="px-2 py-3 text-xs text-muted-foreground">
+                          No meetings yet
+                        </div>
+                      ) : (
+                        recent.map(child => renderItem(child, 1))
                       )}
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-
-            {/* Scrollable meeting items */}
-            {!isCollapsed && (
-              <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
-                {filteredSidebarItems
-                  .filter(item => item.type === 'folder' && expandedFolders.has(item.id) && item.children)
-                  .map(item => (
-                    <div key={`${item.id}-children`} className="mx-3">
-                      {groupMeetingsByDate(item.children ?? []).map(group => (
-                        <div key={group.key}>
-                          <div className="sticky top-0 z-[5] bg-card/95 backdrop-blur px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/60">
-                            {group.label}
-                          </div>
-                          {group.items.map(child => renderItem(child, 1))}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-              </div>
-            )}
+                </>
+              );
+            })()}
           </div>
         </div>
 
