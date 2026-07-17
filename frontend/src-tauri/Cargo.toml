@@ -1,6 +1,6 @@
 [package]
 name = "murmur"
-version = "0.8.0"
+version = "0.8.1"
 description = "Privacy-first AI meeting assistant that runs entirely on your machine"
 authors = ["Renzo Beux", "Zackriya Solutions"]
 license = "MIT"

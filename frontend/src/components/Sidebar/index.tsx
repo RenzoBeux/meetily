@@ -369,7 +369,6 @@ const Sidebar: React.FC = () => {
     if (!isCollapsed) return null;
 
     const isHomePage = pathname === '/';
-    const isMeetingPage = pathname?.includes('/meeting-details');
     const isSettingsPage = pathname === '/settings';
     const isTrashPage = pathname === '/trash';
     const isMeetingsListPage = pathname === '/meetings';
@@ -456,24 +455,6 @@ const Sidebar: React.FC = () => {
               </TooltipContent>
             </Tooltip>
           )}
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => {
-                  if (isCollapsed) toggleCollapse();
-                  toggleFolder('meetings');
-                }}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isMeetingPage ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-                  }`}
-              >
-                <NotebookPen className="w-5 h-5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Meeting Notes</p>
-            </TooltipContent>
-          </Tooltip>
 
           <Tooltip>
             <TooltipTrigger asChild>
